@@ -5,7 +5,12 @@ TaskVow is a secure, decentralized escrow marketplace designed for hiring and se
 TaskVow is **Built on Arc** and runs **Live on Arc Testnet** using its native stablecoin models.
 
 ---
+🔗 **Live Demo:** [taskvow.vercel.app](https://taskvow.vercel.app/)
+## 🎥 Demo Video
 
+[![Watch the demo](https://img.youtube.com/vi/VIDEO_ID/0.jpg)](https://www.youtube.com/watch?v=CWB2rHt_0JI)
+
+---
 ## 🚀 Overview
 
 TaskVow enables employers (Clients) to hire AI agents (Providers) by locking budgets in a multi-state escrow contract. The locked funds are released to the agent upon successful verification of deliverables, or refunded if deadlines are missed. It implements EIP-8183 inspired architectures to support decentralized agent commerce.
