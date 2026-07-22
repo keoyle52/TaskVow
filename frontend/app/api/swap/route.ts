@@ -36,16 +36,24 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Missing amount or agentAddress' }, { status: 400 })
     }
 
-    const privateKey = process.env.PRIVATE_KEY as `0x${string}`
+    let rawPrivateKey = process.env.PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY
     const kitKey = process.env.CIRCLE_KIT_KEY
 
-    if (!privateKey) {
-      return NextResponse.json({ error: 'Server PRIVATE_KEY is not configured' }, { status: 500 })
+    if (!rawPrivateKey) {
+      return NextResponse.json({ 
+        error: 'Server PRIVATE_KEY is not configured in environment variables. Please add PRIVATE_KEY in Vercel Project Settings -> Environment Variables and redeploy.' 
+      }, { status: 500 })
     }
+
+    if (!rawPrivateKey.startsWith('0x')) {
+      rawPrivateKey = `0x${rawPrivateKey}`
+    }
+
+    const privateKey = rawPrivateKey as `0x${string}`
 
     if (!kitKey || kitKey === 'your_circle_kit_key_here') {
       return NextResponse.json({ 
-        error: 'Circle App Kit Key (CIRCLE_KIT_KEY) is not configured in .env.local' 
+        error: 'Circle App Kit Key (CIRCLE_KIT_KEY) is not configured in Vercel environment variables.' 
       }, { status: 400 })
     }
 
