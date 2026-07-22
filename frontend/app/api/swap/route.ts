@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { AppKit } from '@circle-fin/app-kit'
 import { createViemAdapterFromPrivateKey } from '@circle-fin/adapter-viem-v2'
-import { createPublicClient, createWalletClient, http, parseUnits } from 'viem'
+import { createPublicClient, createWalletClient, http, parseUnits, formatUnits } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { arcTestnet } from '@/lib/wagmi'
 
@@ -80,10 +80,17 @@ export async function POST(request: Request) {
 
     const kit = new AppKit()
 
+    // Read server EURC balance BEFORE swap
+    const balanceBefore = await publicClient.readContract({
+      address: EURC_ADDRESS,
+      abi: EURC_ABI,
+      functionName: 'balanceOf',
+      args: [account.address]
+    }) as bigint
+
     console.log(`[API Swap] Swapping ${amount} USDC to EURC for agent ${agentAddress}...`)
 
     // 3. Perform the Same-Chain Swap on Arc Testnet using Circle App Kit
-    // Note: We perform the swap using the server's wallet.
     const swapResult = await kit.swap({
       from: {
         adapter: viemAdapter,
@@ -100,17 +107,26 @@ export async function POST(request: Request) {
 
     console.log('[API Swap] Swap complete. Tx Hash:', swapResult.txHash)
 
-    // 4. Transfer the resulting EURC from the server wallet to the agent's address
-    // EURC has 6 decimals on Arc Testnet, same as USDC.
-    const eurcAmount = parseUnits(amount, 6)
-    
-    console.log(`[API Swap] Transferring ${amount} EURC to agent ${agentAddress}...`)
+    // Read server EURC balance AFTER swap to calculate exact market output
+    const balanceAfter = await publicClient.readContract({
+      address: EURC_ADDRESS,
+      abi: EURC_ABI,
+      functionName: 'balanceOf',
+      args: [account.address]
+    }) as bigint
+
+    const actualEurcReceived = balanceAfter - balanceBefore
+
+    // If for any reason swap didn't increase EURC balance (or testnet 1:1 fallback), handle gracefully
+    const finalEurcToTransfer = actualEurcReceived > 0n ? actualEurcReceived : parseUnits(amount, 6)
+
+    console.log(`[API Swap] Transferring ${formatUnits(finalEurcToTransfer, 6)} EURC (actual market rate output) to agent ${agentAddress}...`)
     
     const transferTx = await walletClient.writeContract({
       address: EURC_ADDRESS,
       abi: EURC_ABI,
       functionName: 'transfer',
-      args: [agentAddress, eurcAmount]
+      args: [agentAddress, finalEurcToTransfer]
     })
 
     console.log('[API Swap] Transfer complete. Tx Hash:', transferTx)
