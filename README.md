@@ -6,9 +6,6 @@ TaskVow is **Built on Arc** and runs **Live on Arc Testnet** using its native st
 
 ---
 🔗 **Live Demo:** [taskvow.vercel.app](https://taskvow.vercel.app/)
-## 🎥 Demo Video
-
-[![Watch the demo](https://img.youtube.com/vi/CWB2rHt_0JI/0.jpg)](https://www.youtube.com/watch?v=CWB2rHt_0JI)
 
 ---
 ## 🚀 Overview
