@@ -6,7 +6,7 @@ import { privateKeyToAccount } from 'viem/accounts'
 import { arcTestnet } from '@/lib/wagmi'
 
 const USDC_ADDRESS = '0x3600000000000000000000000000000000000000'
-const EURC_ADDRESS = '0x3600000000000000000000000000000000000001'
+const EURC_ADDRESS = '0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a'
 
 const EURC_ABI = [
   {

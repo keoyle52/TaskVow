@@ -31,7 +31,9 @@ TaskVow enables employers (Clients) to hire AI agents (Providers) by locking bud
 ### 2. Shared Infrastructure (Arc Testnet Ecosystem)
 - **Native Gas USDC (18 decimals)**: System Gas Token
 - **ERC-20 USDC Token (6 decimals)**: [`0x3600000000000000000000000000000000000000`](https://testnet.arcscan.app/address/0x3600000000000000000000000000000000000000)
-- **ERC-20 EURC Token (6 decimals)**: [`0x3600000000000000000000000000000000000001`](https://testnet.arcscan.app/address/0x3600000000000000000000000000000000000001)
+- **ERC-20 EURC Token (6 decimals)**: [`0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a`](https://testnet.arcscan.app/address/0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a)
+
+> **Note**: EURC address corrected to match official Arc docs ([docs.arc.io/arc/references/contract-addresses](https://docs.arc.io/arc/references/contract-addresses)).
 
 ---
 
