@@ -19,12 +19,21 @@ export const AGENT_REGISTRY_ABI = [
   },
   {
     "type": "function",
+    "name": "escrowContract",
+    "stateMutability": "view",
+    "inputs": [],
+    "outputs": [{ "name": "", "type": "address" }]
+  },
+  {
+    "type": "function",
     "name": "agents",
     "stateMutability": "view",
     "inputs": [{ "name": "agentAddress", "type": "address" }],
     "outputs": [
       { "name": "metadataURI", "type": "string" },
       { "name": "jobsCompleted", "type": "uint256" },
+      { "name": "disputesLost", "type": "uint256" },
+      { "name": "totalVolumeUSDC", "type": "uint256" },
       { "name": "active", "type": "bool" }
     ]
   },
@@ -83,6 +92,13 @@ export const JOB_ESCROW_ABI = [
   },
   {
     "type": "function",
+    "name": "claimTimeoutRelease",
+    "stateMutability": "nonpayable",
+    "inputs": [{ "name": "jobId", "type": "uint256" }],
+    "outputs": []
+  },
+  {
+    "type": "function",
     "name": "raiseDispute",
     "stateMutability": "nonpayable",
     "inputs": [{ "name": "jobId", "type": "uint256" }],
@@ -115,7 +131,9 @@ export const JOB_ESCROW_ABI = [
       { "name": "client", "type": "address" },
       { "name": "provider", "type": "address" },
       { "name": "amount", "type": "uint256" },
+      { "name": "stakeAmount", "type": "uint256" },
       { "name": "deadline", "type": "uint256" },
+      { "name": "submittedAt", "type": "uint256" },
       { "name": "descriptionURI", "type": "string" },
       { "name": "proofURI", "type": "string" },
       { "name": "status", "type": "uint8" }
@@ -136,6 +154,13 @@ export const JOB_ESCROW_ABI = [
     "outputs": [{ "name": "", "type": "address" }]
   },
   {
+    "type": "function",
+    "name": "releaseTimeout",
+    "stateMutability": "view",
+    "inputs": [],
+    "outputs": [{ "name": "", "type": "uint256" }]
+  },
+  {
     "type": "event",
     "name": "JobCreated",
     "inputs": [
@@ -152,7 +177,8 @@ export const JOB_ESCROW_ABI = [
     "name": "JobAccepted",
     "inputs": [
       { "indexed": true, "name": "jobId", "type": "uint256" },
-      { "indexed": true, "name": "provider", "type": "address" }
+      { "indexed": true, "name": "provider", "type": "address" },
+      { "indexed": false, "name": "stakeAmount", "type": "uint256" }
     ],
     "anonymous": false
   },
@@ -161,7 +187,8 @@ export const JOB_ESCROW_ABI = [
     "name": "DeliverableSubmitted",
     "inputs": [
       { "indexed": true, "name": "jobId", "type": "uint256" },
-      { "indexed": false, "name": "proofURI", "type": "string" }
+      { "indexed": false, "name": "proofURI", "type": "string" },
+      { "indexed": false, "name": "submittedAt", "type": "uint256" }
     ],
     "anonymous": false
   },
@@ -171,7 +198,17 @@ export const JOB_ESCROW_ABI = [
     "inputs": [
       { "indexed": true, "name": "jobId", "type": "uint256" },
       { "indexed": true, "name": "provider", "type": "address" },
-      { "indexed": false, "name": "amount", "type": "uint256" }
+      { "indexed": false, "name": "totalAmount", "type": "uint256" }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "TimeoutReleaseClaimed",
+    "inputs": [
+      { "indexed": true, "name": "jobId", "type": "uint256" },
+      { "indexed": true, "name": "provider", "type": "address" },
+      { "indexed": false, "name": "totalAmount", "type": "uint256" }
     ],
     "anonymous": false
   },

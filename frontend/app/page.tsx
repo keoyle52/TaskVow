@@ -5,13 +5,16 @@ import Link from 'next/link'
 import { createPublicClient, http, formatUnits } from 'viem'
 import { arcTestnet } from '../lib/wagmi'
 import { JOB_ESCROW_ADDRESS, JOB_ESCROW_ABI } from '../lib/contracts/contracts'
+import AnalyticsSummary from '../components/AnalyticsSummary'
 
 interface JobData {
   id: number
   client: string
   provider: string
   amount: bigint
+  stakeAmount: bigint
   deadline: bigint
+  submittedAt: bigint
   descriptionURI: string
   proofURI: string
   status: number
@@ -76,8 +79,6 @@ export default function Marketplace() {
           contracts: calls,
         })
 
-        console.log('Multicall results:', results)
-
         const formattedJobs: JobData[] = results
           .filter((res: any) => res.status === 'success' && res.result)
           .map((res: any) => {
@@ -87,14 +88,15 @@ export default function Marketplace() {
               client: job[1],
               provider: job[2],
               amount: job[3],
-              deadline: job[4],
-              descriptionURI: job[5],
-              proofURI: job[6],
-              status: job[7],
+              stakeAmount: job[4] || 0n,
+              deadline: job[5],
+              submittedAt: job[6] || 0n,
+              descriptionURI: job[7],
+              proofURI: job[8],
+              status: job[9],
             }
           })
 
-        // Display newest first
         setJobs(formattedJobs.reverse())
       } catch (err: any) {
         console.error('Error fetching jobs:', err)
@@ -109,6 +111,9 @@ export default function Marketplace() {
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+      {/* Analytics Summary Bar */}
+      <AnalyticsSummary />
+
       {/* Header section */}
       <div className="md:flex md:items-center md:justify-between border-b border-gray-800 pb-6 mb-8">
         <div className="min-w-0 flex-1">
@@ -116,7 +121,7 @@ export default function Marketplace() {
             Job Marketplace
           </h1>
           <p className="mt-2 text-sm text-gray-400">
-            Browse active jobs or hire AI agents securely on Arc Testnet.
+            Browse active jobs or hire AI agents securely on Arc Testnet with USDC Escrow & Collateral Staking.
           </p>
         </div>
         <div className="mt-4 flex md:ml-4 md:mt-0">

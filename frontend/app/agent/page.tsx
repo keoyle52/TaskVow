@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { useAccount, useReadContract, useWriteContract, useWatchContractEvent } from 'wagmi'
+import { useAccount, useReadContract, useWriteContract } from 'wagmi'
 import { createPublicClient, http, formatUnits, parseUnits } from 'viem'
 import { arcTestnet } from '@/lib/wagmi'
 import {
@@ -74,7 +74,7 @@ export default function AgentPortal() {
 
   const { writeContractAsync } = useWriteContract()
 
-  // Read agent registration info from AgentRegistry
+  // Read agent registration info & expanded reputation from AgentRegistry
   const { data: agentInfo, refetch: refetchAgentInfo } = useReadContract({
     address: AGENT_REGISTRY_ADDRESS,
     abi: AGENT_REGISTRY_ABI,
@@ -87,8 +87,10 @@ export default function AgentPortal() {
     },
   })
 
-  const isRegistered = agentInfo ? (agentInfo as any)[2] : false
+  const isRegistered = agentInfo ? Boolean((agentInfo as any)[4]) : false
   const jobsCompletedCount = agentInfo ? Number((agentInfo as any)[1]) : 0
+  const disputesLostCount = agentInfo ? Number((agentInfo as any)[2]) : 0
+  const totalVolumeUSDC = agentInfo ? BigInt((agentInfo as any)[3] || 0) : 0n
   const agentMetadata = agentInfo ? (agentInfo as any)[0] : ''
 
   const isCorrectNetwork = chainId === arcTestnet.id
@@ -119,7 +121,6 @@ export default function AgentPortal() {
         return
       }
 
-      // Fetch all jobs in a single batch query using multicall
       const calls = []
       for (let i = 1; i <= totalJobs; i++) {
         calls.push({
@@ -133,8 +134,6 @@ export default function AgentPortal() {
       const results = await client.multicall({
         contracts: calls,
       })
-
-      console.log('Agent Multicall results:', results)
 
       const formattedJobs: JobData[] = results
         .filter((res: any) => res.status === 'success' && res.result)
@@ -152,10 +151,7 @@ export default function AgentPortal() {
           }
         })
 
-      // Filter open jobs (Status: Created = 0)
       const available = formattedJobs.filter((job) => job.status === 0)
-      
-      // Filter agent's active/settled jobs (Provider is self and Status is Accepted = 1 or Submitted = 2 or Settled = 3 or Disputed = 4)
       const assigned = formattedJobs.filter(
         (job) =>
           address &&
@@ -200,7 +196,6 @@ export default function AgentPortal() {
       })
 
       setTxHash(hash)
-      // Small timeout to refresh contract states
       setTimeout(() => {
         refetchAgentInfo()
         setLoading(false)
@@ -238,17 +233,33 @@ export default function AgentPortal() {
     }
   }
 
-  // Accept Job Handler
-  const handleAcceptJob = async (jobId: number) => {
+  // Accept Job Handler (with collateral staking approval)
+  const handleAcceptJob = async (jobId: number, amount: bigint) => {
     try {
       setErrorMsg(null)
+      const stakeAmount = (amount * 1000n) / 10000n // 10% collateral staking
+
+      if (stakeAmount > 0n) {
+        alert(`Accepting Job #${jobId} requires 10% USDC collateral staking (${formatUnits(stakeAmount, 6)} USDC).\n\nStep 1: Approving USDC collateral...`)
+        const approveHash = await writeContractAsync({
+          address: USDC_TOKEN_ADDRESS,
+          abi: USDC_ABI,
+          functionName: 'approve',
+          args: [JOB_ESCROW_ADDRESS, stakeAmount],
+        })
+
+        const client = createPublicClient({ chain: arcTestnet, transport: http('/api/rpc') })
+        await client.waitForTransactionReceipt({ hash: approveHash })
+      }
+
+      alert(`Step 2: Confirming acceptJob transaction...`)
       const hash = await writeContractAsync({
         address: JOB_ESCROW_ADDRESS,
         abi: JOB_ESCROW_ABI,
         functionName: 'acceptJob',
         args: [BigInt(jobId)],
       })
-      alert(`Accepting job. Tx Hash: ${hash}`)
+      alert(`Job accepted! Tx Hash: ${hash}`)
       setTimeout(() => {
         fetchAgentJobs()
       }, 3000)
@@ -287,7 +298,6 @@ export default function AgentPortal() {
       setSwapLoading(jobId)
       setErrorMsg(null)
 
-      // Step 1: Transfer received USDC from agent's wallet to swap pool
       const parsedAmount = parseUnits(amount, 6)
       const serverAddress = '0x0c93FB2D1BD2F15c12fD5fCCe14918D2dE6Fd9e6'
 
@@ -302,7 +312,6 @@ export default function AgentPortal() {
 
       alert(`Step 1 Complete! USDC deposit confirmed.\n\nStep 2: Circle App Kit is now executing the USDC -> EURC swap...`)
 
-      // Step 2: Call server API to run Circle App Kit Swap & deliver EURC
       const response = await fetch('/api/swap', {
         method: 'POST',
         headers: {
@@ -338,7 +347,7 @@ export default function AgentPortal() {
       <div className="border-b border-gray-800 pb-6 mb-8">
         <h1 className="text-3xl font-bold tracking-tight text-white sm:text-4xl">Agent Portal</h1>
         <p className="mt-2 text-sm text-gray-400">
-          Register your agent profile, accept contract work, and submit proof of deliverables.
+          Register your agent profile, accept contract work, stake collateral, and view on-chain reputation stats.
         </p>
       </div>
 
@@ -351,10 +360,10 @@ export default function AgentPortal() {
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
-          {/* Left Column: Registry Profile */}
+          {/* Left Column: Registry Profile & Reputation */}
           <div className="lg:col-span-1 space-y-6">
             <div className="rounded-2xl bg-gray-900/40 p-6 ring-1 ring-gray-800 shadow-2xl">
-              <h2 className="text-lg font-bold text-white mb-4">Agent Profile</h2>
+              <h2 className="text-lg font-bold text-white mb-4">Agent Portfolio & Reputation</h2>
 
               {isRegistered ? (
                 /* Registered State */
@@ -362,18 +371,34 @@ export default function AgentPortal() {
                   <div className="rounded-xl bg-emerald-500/5 p-4 ring-1 ring-emerald-500/20">
                     <span className="flex items-center gap-1.5 text-xs font-semibold text-emerald-400">
                       <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                      Active Agent
+                      Active Registered Agent
                     </span>
                     <p className="mt-2 text-xs text-gray-400 font-mono break-all">{address}</p>
                   </div>
 
-                  <div className="space-y-3">
-                    <div className="flex justify-between border-b border-gray-800 pb-2">
-                      <span className="text-xs text-gray-500">Jobs Completed:</span>
-                      <span className="text-sm font-bold text-white">{jobsCompletedCount}</span>
+                  {/* Expanded Reputation Metrics Grid */}
+                  <div className="grid grid-cols-3 gap-2 py-2">
+                    <div className="rounded-xl bg-gray-950 p-3 text-center border border-gray-800">
+                      <span className="block text-[10px] text-gray-500 font-semibold uppercase">Completed</span>
+                      <span className="text-lg font-bold text-emerald-400">{jobsCompletedCount}</span>
                     </div>
+                    <div className="rounded-xl bg-gray-950 p-3 text-center border border-gray-800">
+                      <span className="block text-[10px] text-gray-500 font-semibold uppercase">Disputes Lost</span>
+                      <span className={`text-lg font-bold ${disputesLostCount > 0 ? 'text-red-400' : 'text-gray-400'}`}>
+                        {disputesLostCount}
+                      </span>
+                    </div>
+                    <div className="rounded-xl bg-gray-950 p-3 text-center border border-gray-800">
+                      <span className="block text-[10px] text-gray-500 font-semibold uppercase">Volume</span>
+                      <span className="text-sm font-bold text-blue-400 font-mono truncate block">
+                        {Number(formatUnits(totalVolumeUSDC, 6)).toFixed(1)}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
                     <div className="flex flex-col border-b border-gray-800 pb-2">
-                      <span className="text-xs text-gray-500">Metadata Brief:</span>
+                      <span className="text-xs text-gray-500">Metadata / Capabilities:</span>
                       <span className="text-xs text-gray-300 mt-1 italic break-words">{agentMetadata}</span>
                     </div>
                   </div>
@@ -556,16 +581,17 @@ export default function AgentPortal() {
                         <h4 className="text-sm font-semibold text-gray-200 mt-1">{job.descriptionURI}</h4>
                         <p className="text-xs text-gray-400 mt-0.5">
                           Budget: <span className="font-semibold text-blue-400">{formatUnits(job.amount, 6)} USDC</span>
+                          <span className="text-gray-500 ml-2">(Stake required: {formatUnits((job.amount * 1000n) / 10000n, 6)} USDC)</span>
                         </p>
                       </div>
 
                       <div className="flex gap-2">
                         {isRegistered ? (
                           <button
-                            onClick={() => handleAcceptJob(job.id)}
+                            onClick={() => handleAcceptJob(job.id, job.amount)}
                             className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500 transition-all"
                           >
-                            Accept Job
+                            Accept Job (10% Stake)
                           </button>
                         ) : (
                           <span className="text-[10px] text-gray-500 max-w-28 text-center italic">

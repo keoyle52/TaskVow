@@ -12,7 +12,9 @@ interface JobData {
   client: string
   provider: string
   amount: bigint
+  stakeAmount: bigint
   deadline: bigint
+  submittedAt: bigint
   descriptionURI: string
   proofURI: string
   status: number
@@ -35,6 +37,7 @@ export default function JobDetails({ params }: { params: Promise<{ id: string }>
   const { address, isConnected, chainId } = useAccount()
   const [job, setJob] = useState<JobData | null>(null)
   const [adminAddress, setAdminAddress] = useState<string | null>(null)
+  const [releaseTimeoutSec, setReleaseTimeoutSec] = useState<number>(3 * 24 * 3600)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -57,13 +60,22 @@ export default function JobDetails({ params }: { params: Promise<{ id: string }>
         }),
       })
 
-      // Read admin address
-      const admin = await client.readContract({
-        address: JOB_ESCROW_ADDRESS,
-        abi: JOB_ESCROW_ABI,
-        functionName: 'admin',
-      })
-      setAdminAddress(admin as string)
+      // Read admin address & release timeout
+      const [admin, timeout] = await Promise.all([
+        client.readContract({
+          address: JOB_ESCROW_ADDRESS,
+          abi: JOB_ESCROW_ABI,
+          functionName: 'admin',
+        }).catch(() => null),
+        client.readContract({
+          address: JOB_ESCROW_ADDRESS,
+          abi: JOB_ESCROW_ABI,
+          functionName: 'releaseTimeout',
+        }).catch(() => 259200n)
+      ])
+      
+      if (admin) setAdminAddress(admin as string)
+      if (timeout) setReleaseTimeoutSec(Number(timeout))
 
       // Read job data
       const data = await client.readContract({
@@ -82,10 +94,12 @@ export default function JobDetails({ params }: { params: Promise<{ id: string }>
           client: (data as any)[1],
           provider: (data as any)[2],
           amount: (data as any)[3],
-          deadline: (data as any)[4],
-          descriptionURI: (data as any)[5],
-          proofURI: (data as any)[6],
-          status: (data as any)[7],
+          stakeAmount: (data as any)[4] || 0n,
+          deadline: (data as any)[5],
+          submittedAt: (data as any)[6] || 0n,
+          descriptionURI: (data as any)[7],
+          proofURI: (data as any)[8],
+          status: (data as any)[9],
         })
       }
     } catch (err: any) {
@@ -120,6 +134,30 @@ export default function JobDetails({ params }: { params: Promise<{ id: string }>
     } catch (err: any) {
       console.error(err)
       alert(`Transaction failed: ${err.message || err}`)
+      setTxPending(false)
+    }
+  }
+
+  // Claim Timeout Release Handler
+  const handleClaimTimeoutRelease = async () => {
+    if (!job) return
+    try {
+      setTxPending(true)
+      setTxHash(null)
+      const hash = await writeContractAsync({
+        address: JOB_ESCROW_ADDRESS,
+        abi: JOB_ESCROW_ABI,
+        functionName: 'claimTimeoutRelease',
+        args: [BigInt(job.id)],
+      })
+      setTxHash(hash)
+      setTimeout(() => {
+        fetchJobDetails()
+        setTxPending(false)
+      }, 3000)
+    } catch (err: any) {
+      console.error(err)
+      alert(`Timeout release failed: ${err.message || err}`)
       setTxPending(false)
     }
   }
@@ -225,6 +263,7 @@ export default function JobDetails({ params }: { params: Promise<{ id: string }>
   const isAdmin = address && adminAddress && adminAddress.toLowerCase() === address.toLowerCase()
 
   const isDeadlinePassed = Number(job.deadline) < Date.now() / 1000
+  const isTimeoutElapsed = job.submittedAt > 0n && (Date.now() / 1000 >= Number(job.submittedAt) + releaseTimeoutSec)
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-12 sm:px-6 lg:px-8">
@@ -252,6 +291,11 @@ export default function JobDetails({ params }: { params: Promise<{ id: string }>
                   <span className="text-3xl font-bold text-white">{formatUnits(job.amount, 6)}</span>
                   <span className="ml-1 text-sm font-semibold text-blue-400">USDC</span>
                 </div>
+                {job.stakeAmount > 0n && (
+                  <p className="text-[11px] text-emerald-400 mt-1">
+                    Agent Collateral Staked: +{formatUnits(job.stakeAmount, 6)} USDC
+                  </p>
+                )}
               </div>
               <span
                 className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ring-1 ring-inset ${
@@ -267,6 +311,11 @@ export default function JobDetails({ params }: { params: Promise<{ id: string }>
               <div className="rounded-xl bg-blue-500/5 p-5 ring-1 ring-blue-500/10 border border-blue-500/10 space-y-2">
                 <h3 className="text-xs font-bold text-blue-400 uppercase tracking-wider">Submitted Deliverable Proof</h3>
                 <p className="text-sm text-gray-200">{job.proofURI}</p>
+                {job.submittedAt > 0n && (
+                  <p className="text-[11px] text-gray-400 pt-1">
+                    Submitted: {new Date(Number(job.submittedAt) * 1000).toLocaleString()} (Auto-release after {Math.round(releaseTimeoutSec / 86400)} days)
+                  </p>
+                )}
               </div>
             )}
 
@@ -275,7 +324,7 @@ export default function JobDetails({ params }: { params: Promise<{ id: string }>
               <div className="rounded-xl bg-amber-500/5 p-5 ring-1 ring-amber-500/10 border border-amber-500/10 space-y-2">
                 <h3 className="text-xs font-bold text-amber-400 uppercase tracking-wider">Escrow Released</h3>
                 <p className="text-xs text-gray-300">
-                  Your payout of {formatUnits(job.amount, 6)} USDC has been released to your wallet. If you prefer to receive EURC, you can swap it using Circle App Kit in the <Link href="/agent" className="text-blue-400 hover:underline">Agent Portal</Link>.
+                  Your payout of {formatUnits(job.amount, 6)} USDC (+ collateral stake) has been released to your wallet.
                 </p>
               </div>
             )}
@@ -312,7 +361,7 @@ export default function JobDetails({ params }: { params: Promise<{ id: string }>
             <div className="space-y-6">
               {[
                 { label: 'Job Created & Funded', reached: job.status >= 0 },
-                { label: 'Agent Assigned', reached: job.status >= 1 && job.status !== 5 },
+                { label: 'Agent Assigned & Staked', reached: job.status >= 1 && job.status !== 5 },
                 { label: 'Deliverable Submitted', reached: job.status >= 2 && job.status !== 5 },
                 { label: 'Funds Settled', reached: job.status === 3 },
               ].map((step, idx) => (
@@ -353,6 +402,16 @@ export default function JobDetails({ params }: { params: Promise<{ id: string }>
                   className="w-full rounded-lg bg-emerald-600 px-4 py-2.5 text-xs font-semibold text-white hover:bg-emerald-500 transition-all"
                 >
                   Approve Work & Release USDC
+                </button>
+              )}
+
+              {/* Timeout Release Claim (Provider or anyone if submitted + timeout passed) */}
+              {job.status === 2 && isTimeoutElapsed && !txPending && (
+                <button
+                  onClick={handleClaimTimeoutRelease}
+                  className="w-full rounded-lg bg-indigo-600 px-4 py-2.5 text-xs font-semibold text-white hover:bg-indigo-500 transition-all"
+                >
+                  Claim Timeout Release
                 </button>
               )}
 
@@ -410,7 +469,6 @@ export default function JobDetails({ params }: { params: Promise<{ id: string }>
                 </div>
               )}
 
-              {/* If no action can be taken */}
               {!isClient && !isProvider && !isAdmin && (
                 <p className="text-xs text-gray-500 italic">No actions available for your connected wallet.</p>
               )}

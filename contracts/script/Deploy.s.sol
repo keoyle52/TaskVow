@@ -20,13 +20,17 @@ contract DeployScript is Script {
         AgentRegistry registry = new AgentRegistry();
         console.log("AgentRegistry deployed at:", address(registry));
 
-        // 2. Deploy JobEscrow
-        JobEscrow escrow = new JobEscrow(usdcAddress, address(registry), adminAddress);
+        // 2. Deploy JobEscrow (3 days timeout, 10% agent staking)
+        JobEscrow escrow = new JobEscrow(usdcAddress, address(registry), adminAddress, 3 days, 1000);
         console.log("JobEscrow deployed at:", address(escrow));
 
         // 3. Connect AgentRegistry to JobEscrow
         registry.setEscrowContract(address(escrow));
         console.log("AgentRegistry connected to JobEscrow");
+
+        // 4. Verification assertion check to ensure connection was established
+        require(registry.escrowContract() == address(escrow), "Deployment Error: AgentRegistry escrowContract link failed!");
+        console.log("Verified AgentRegistry.escrowContract is set to:", registry.escrowContract());
 
         vm.stopBroadcast();
     }

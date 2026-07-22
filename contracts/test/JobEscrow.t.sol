@@ -14,7 +14,6 @@ contract MockUSDC is ERC20 {
         _mint(to, amount);
     }
 
-    // Override decimals to be 6 like real USDC
     function decimals() public pure override returns (uint8) {
         return 6;
     }
@@ -43,7 +42,6 @@ contract MaliciousUSDC is ERC20 {
     function transfer(address to, uint256 amount) public override returns (bool) {
         bool success = super.transfer(to, amount);
         if (enableCallback && to == attackerContract) {
-            // Trigger callback on the attacker contract to perform reentrancy
             ReentrancyAttacker(payable(attackerContract)).maliciousCallback();
         }
         return success;
@@ -69,15 +67,12 @@ contract ReentrancyAttacker {
         attackResolveDispute = testResolve;
     }
 
-    // Callback triggered by MaliciousUSDC during token transfer
     function maliciousCallback() external {
         if (attackApprovedAndRelease) {
-            attackApprovedAndRelease = false; // Prevent infinite loop in test if it doesn't revert
-            // Attempt to call approveAndRelease again
+            attackApprovedAndRelease = false;
             escrow.approveAndRelease(targetJobId);
         } else if (attackResolveDispute) {
-            attackResolveDispute = false; // Prevent infinite loop
-            // Attempt to call resolveDispute again
+            attackResolveDispute = false;
             escrow.resolveDispute(targetJobId, true);
         }
     }
@@ -94,26 +89,19 @@ contract JobEscrowTest is Test {
 
     uint256 public constant INITIAL_BALANCE = 1000 * 10**6; // 1000 USDC
     uint256 public constant JOB_BUDGET = 100 * 10**6;      // 100 USDC
+    uint256 public constant STAKE_AMOUNT = 10 * 10**6;      // 10 USDC (10% of 100 USDC)
     uint256 public constant DEADLINE = 3600;
 
     function setUp() public {
-        // Deploy Mock USDC
         usdc = new MockUSDC();
-
-        // Deploy AgentRegistry
         registry = new AgentRegistry();
+        escrow = new JobEscrow(address(usdc), address(registry), admin, 3 days, 1000); // 10% staking
 
-        // Deploy JobEscrow
-        escrow = new JobEscrow(address(usdc), address(registry), admin);
-
-        // Connect registry to escrow
         registry.setEscrowContract(address(escrow));
 
-        // Mint USDC to client and provider
         usdc.mint(client, INITIAL_BALANCE);
         usdc.mint(provider, INITIAL_BALANCE);
 
-        // Register provider as agent
         vm.prank(provider);
         registry.registerAgent("ipfs://QmProviderMetadata");
     }
@@ -133,7 +121,9 @@ contract JobEscrowTest is Test {
             address jobClient,
             address jobProvider,
             uint256 amount,
+            uint256 stakeAmount,
             uint256 deadline,
+            uint256 submittedAt,
             string memory descriptionURI,
             string memory proofURI,
             JobEscrow.JobStatus status
@@ -143,24 +133,31 @@ contract JobEscrowTest is Test {
         assertEq(jobClient, client);
         assertEq(jobProvider, address(0));
         assertEq(amount, JOB_BUDGET);
+        assertEq(stakeAmount, 0);
         assertEq(deadline, block.timestamp + DEADLINE);
+        assertEq(submittedAt, 0);
         assertEq(descriptionURI, "ipfs://QmJobDetails");
         assertEq(proofURI, "");
         assertEq(uint256(status), uint256(JobEscrow.JobStatus.Created));
     }
 
-    function testAcceptJob() public {
+    function testAcceptJobWithStaking() public {
         vm.startPrank(client);
         usdc.approve(address(escrow), JOB_BUDGET);
         uint256 jobId = escrow.createJob(JOB_BUDGET, block.timestamp + DEADLINE, "ipfs://QmJobDetails");
         vm.stopPrank();
 
-        vm.prank(provider);
+        vm.startPrank(provider);
+        usdc.approve(address(escrow), STAKE_AMOUNT);
         escrow.acceptJob(jobId);
+        vm.stopPrank();
 
-        (, , address jobProvider, , , , , JobEscrow.JobStatus status) = escrow.jobs(jobId);
+        (, , address jobProvider, , uint256 stakeAmount, , , , , JobEscrow.JobStatus status) = escrow.jobs(jobId);
         assertEq(jobProvider, provider);
+        assertEq(stakeAmount, STAKE_AMOUNT);
         assertEq(uint256(status), uint256(JobEscrow.JobStatus.Accepted));
+        assertEq(usdc.balanceOf(provider), INITIAL_BALANCE - STAKE_AMOUNT);
+        assertEq(usdc.balanceOf(address(escrow)), JOB_BUDGET + STAKE_AMOUNT);
     }
 
     function testAcceptJobUnregisteredAgentReverts() public {
@@ -181,14 +178,15 @@ contract JobEscrowTest is Test {
         uint256 jobId = escrow.createJob(JOB_BUDGET, block.timestamp + DEADLINE, "ipfs://QmJobDetails");
         vm.stopPrank();
 
-        vm.prank(provider);
+        vm.startPrank(provider);
+        usdc.approve(address(escrow), STAKE_AMOUNT);
         escrow.acceptJob(jobId);
-
-        vm.prank(provider);
         escrow.submitDeliverable(jobId, "ipfs://QmProofOfWork");
+        vm.stopPrank();
 
-        (, , , , , , string memory proofURI, JobEscrow.JobStatus status) = escrow.jobs(jobId);
+        (, , , , , , uint256 submittedAt, , string memory proofURI, JobEscrow.JobStatus status) = escrow.jobs(jobId);
         assertEq(proofURI, "ipfs://QmProofOfWork");
+        assertGt(submittedAt, 0);
         assertEq(uint256(status), uint256(JobEscrow.JobStatus.Submitted));
     }
 
@@ -198,39 +196,39 @@ contract JobEscrowTest is Test {
         uint256 jobId = escrow.createJob(JOB_BUDGET, block.timestamp + DEADLINE, "ipfs://QmJobDetails");
         vm.stopPrank();
 
-        vm.prank(provider);
+        vm.startPrank(provider);
+        usdc.approve(address(escrow), STAKE_AMOUNT);
         escrow.acceptJob(jobId);
-
-        vm.prank(provider);
         vm.expectRevert("Proof URI cannot be empty");
         escrow.submitDeliverable(jobId, "");
+        vm.stopPrank();
     }
 
-    function testApproveAndRelease() public {
+    function testApproveAndReleaseReturnsStakeAndVolume() public {
         vm.startPrank(client);
         usdc.approve(address(escrow), JOB_BUDGET);
         uint256 jobId = escrow.createJob(JOB_BUDGET, block.timestamp + DEADLINE, "ipfs://QmJobDetails");
         vm.stopPrank();
 
-        vm.prank(provider);
+        vm.startPrank(provider);
+        usdc.approve(address(escrow), STAKE_AMOUNT);
         escrow.acceptJob(jobId);
-
-        vm.prank(provider);
         escrow.submitDeliverable(jobId, "ipfs://QmProofOfWork");
+        vm.stopPrank();
 
         vm.prank(client);
         escrow.approveAndRelease(jobId);
 
-        (, , , , , , , JobEscrow.JobStatus status) = escrow.jobs(jobId);
+        (, , , , , , , , , JobEscrow.JobStatus status) = escrow.jobs(jobId);
         assertEq(uint256(status), uint256(JobEscrow.JobStatus.Settled));
 
-        // Check USDC balances
         assertEq(usdc.balanceOf(provider), INITIAL_BALANCE + JOB_BUDGET);
         assertEq(usdc.balanceOf(address(escrow)), 0);
 
-        // Check agent completed jobs count
-        (, uint256 completed, ) = registry.agents(provider);
+        (, uint256 completed, uint256 disputesLost, uint256 volume, ) = registry.agents(provider);
         assertEq(completed, 1);
+        assertEq(disputesLost, 0);
+        assertEq(volume, JOB_BUDGET);
     }
 
     function testApproveAndReleaseOnlyClientReverts() public {
@@ -239,35 +237,143 @@ contract JobEscrowTest is Test {
         uint256 jobId = escrow.createJob(JOB_BUDGET, block.timestamp + DEADLINE, "ipfs://QmJobDetails");
         vm.stopPrank();
 
-        vm.prank(provider);
+        vm.startPrank(provider);
+        usdc.approve(address(escrow), STAKE_AMOUNT);
         escrow.acceptJob(jobId);
-
-        vm.prank(provider);
         escrow.submitDeliverable(jobId, "ipfs://QmProofOfWork");
+        vm.stopPrank();
 
         vm.prank(provider);
         vm.expectRevert("Only client can call");
         escrow.approveAndRelease(jobId);
     }
 
-    function testCancelJobAfterDeadline() public {
+    function testClaimTimeoutReleaseSuccess() public {
         vm.startPrank(client);
         usdc.approve(address(escrow), JOB_BUDGET);
         uint256 jobId = escrow.createJob(JOB_BUDGET, block.timestamp + DEADLINE, "ipfs://QmJobDetails");
         vm.stopPrank();
 
-        // Warp time beyond deadline
+        vm.startPrank(provider);
+        usdc.approve(address(escrow), STAKE_AMOUNT);
+        escrow.acceptJob(jobId);
+        escrow.submitDeliverable(jobId, "ipfs://QmProofOfWork");
+        vm.stopPrank();
+
+        vm.warp(block.timestamp + 3 days + 1);
+
+        vm.prank(provider);
+        escrow.claimTimeoutRelease(jobId);
+
+        (, , , , , , , , , JobEscrow.JobStatus status) = escrow.jobs(jobId);
+        assertEq(uint256(status), uint256(JobEscrow.JobStatus.Settled));
+        assertEq(usdc.balanceOf(provider), INITIAL_BALANCE + JOB_BUDGET);
+    }
+
+    function testClaimTimeoutReleaseBeforeTimeoutReverts() public {
+        vm.startPrank(client);
+        usdc.approve(address(escrow), JOB_BUDGET);
+        uint256 jobId = escrow.createJob(JOB_BUDGET, block.timestamp + DEADLINE, "ipfs://QmJobDetails");
+        vm.stopPrank();
+
+        vm.startPrank(provider);
+        usdc.approve(address(escrow), STAKE_AMOUNT);
+        escrow.acceptJob(jobId);
+        escrow.submitDeliverable(jobId, "ipfs://QmProofOfWork");
+        vm.stopPrank();
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(provider);
+        vm.expectRevert("Timeout period has not passed");
+        escrow.claimTimeoutRelease(jobId);
+    }
+
+    function testRaiseDispute() public {
+        vm.startPrank(client);
+        usdc.approve(address(escrow), JOB_BUDGET);
+        uint256 jobId = escrow.createJob(JOB_BUDGET, block.timestamp + DEADLINE, "ipfs://QmJobDetails");
+        vm.stopPrank();
+
+        vm.startPrank(provider);
+        usdc.approve(address(escrow), STAKE_AMOUNT);
+        escrow.acceptJob(jobId);
+        vm.stopPrank();
+
+        vm.prank(provider);
+        escrow.raiseDispute(jobId);
+
+        (, , , , , , , , , JobEscrow.JobStatus status) = escrow.jobs(jobId);
+        assertEq(uint256(status), uint256(JobEscrow.JobStatus.Disputed));
+    }
+
+    function testResolveDisputeToAgent() public {
+        vm.startPrank(client);
+        usdc.approve(address(escrow), JOB_BUDGET);
+        uint256 jobId = escrow.createJob(JOB_BUDGET, block.timestamp + DEADLINE, "ipfs://QmJobDetails");
+        vm.stopPrank();
+
+        vm.startPrank(provider);
+        usdc.approve(address(escrow), STAKE_AMOUNT);
+        escrow.acceptJob(jobId);
+        vm.stopPrank();
+
+        vm.prank(client);
+        escrow.raiseDispute(jobId);
+
+        vm.prank(admin);
+        escrow.resolveDispute(jobId, true);
+
+        (, , , , , , , , , JobEscrow.JobStatus status) = escrow.jobs(jobId);
+        assertEq(uint256(status), uint256(JobEscrow.JobStatus.Settled));
+        assertEq(usdc.balanceOf(provider), INITIAL_BALANCE + JOB_BUDGET);
+    }
+
+    function testResolveDisputeForfeitsStakeToClient() public {
+        vm.startPrank(client);
+        usdc.approve(address(escrow), JOB_BUDGET);
+        uint256 jobId = escrow.createJob(JOB_BUDGET, block.timestamp + DEADLINE, "ipfs://QmJobDetails");
+        vm.stopPrank();
+
+        vm.startPrank(provider);
+        usdc.approve(address(escrow), STAKE_AMOUNT);
+        escrow.acceptJob(jobId);
+        escrow.submitDeliverable(jobId, "ipfs://QmBadProof");
+        vm.stopPrank();
+
+        vm.prank(client);
+        escrow.raiseDispute(jobId);
+
+        vm.prank(admin);
+        escrow.resolveDispute(jobId, false);
+
+        (, , , , , , , , , JobEscrow.JobStatus status) = escrow.jobs(jobId);
+        assertEq(uint256(status), uint256(JobEscrow.JobStatus.Cancelled));
+
+        assertEq(usdc.balanceOf(client), INITIAL_BALANCE + STAKE_AMOUNT);
+        assertEq(usdc.balanceOf(provider), INITIAL_BALANCE - STAKE_AMOUNT);
+
+        (, , uint256 disputesLost, , ) = registry.agents(provider);
+        assertEq(disputesLost, 1);
+    }
+
+    function testCancelJobAfterDeadlineReturnsStake() public {
+        vm.startPrank(client);
+        usdc.approve(address(escrow), JOB_BUDGET);
+        uint256 jobId = escrow.createJob(JOB_BUDGET, block.timestamp + DEADLINE, "ipfs://QmJobDetails");
+        vm.stopPrank();
+
+        vm.startPrank(provider);
+        usdc.approve(address(escrow), STAKE_AMOUNT);
+        escrow.acceptJob(jobId);
+        vm.stopPrank();
+
         vm.warp(block.timestamp + DEADLINE + 1);
 
         vm.prank(client);
         escrow.cancelJob(jobId);
 
-        (, , , , , , , JobEscrow.JobStatus status) = escrow.jobs(jobId);
-        assertEq(uint256(status), uint256(JobEscrow.JobStatus.Cancelled));
-
-        // Refund check
         assertEq(usdc.balanceOf(client), INITIAL_BALANCE);
-        assertEq(usdc.balanceOf(address(escrow)), 0);
+        assertEq(usdc.balanceOf(provider), INITIAL_BALANCE);
     }
 
     function testCancelJobBeforeDeadlineReverts() public {
@@ -281,110 +387,36 @@ contract JobEscrowTest is Test {
         escrow.cancelJob(jobId);
     }
 
-    function testRaiseDispute() public {
-        vm.startPrank(client);
-        usdc.approve(address(escrow), JOB_BUDGET);
-        uint256 jobId = escrow.createJob(JOB_BUDGET, block.timestamp + DEADLINE, "ipfs://QmJobDetails");
-        vm.stopPrank();
-
-        vm.prank(provider);
-        escrow.acceptJob(jobId);
-
-        // Provider raises dispute
-        vm.prank(provider);
-        escrow.raiseDispute(jobId);
-
-        (, , , , , , , JobEscrow.JobStatus status) = escrow.jobs(jobId);
-        assertEq(uint256(status), uint256(JobEscrow.JobStatus.Disputed));
-    }
-
-    function testResolveDisputeToAgent() public {
-        vm.startPrank(client);
-        usdc.approve(address(escrow), JOB_BUDGET);
-        uint256 jobId = escrow.createJob(JOB_BUDGET, block.timestamp + DEADLINE, "ipfs://QmJobDetails");
-        vm.stopPrank();
-
-        vm.prank(provider);
-        escrow.acceptJob(jobId);
-
-        vm.prank(client);
-        escrow.raiseDispute(jobId);
-
-        // Admin resolves in favor of agent (provider)
-        vm.prank(admin);
-        escrow.resolveDispute(jobId, true);
-
-        (, , , , , , , JobEscrow.JobStatus status) = escrow.jobs(jobId);
-        assertEq(uint256(status), uint256(JobEscrow.JobStatus.Settled));
-        assertEq(usdc.balanceOf(provider), INITIAL_BALANCE + JOB_BUDGET);
-
-        // Agent completed counter increments
-        (, uint256 completed, ) = registry.agents(provider);
-        assertEq(completed, 1);
-    }
-
-    function testResolveDisputeToClient() public {
-        vm.startPrank(client);
-        usdc.approve(address(escrow), JOB_BUDGET);
-        uint256 jobId = escrow.createJob(JOB_BUDGET, block.timestamp + DEADLINE, "ipfs://QmJobDetails");
-        vm.stopPrank();
-
-        vm.prank(provider);
-        escrow.acceptJob(jobId);
-
-        vm.prank(client);
-        escrow.raiseDispute(jobId);
-
-        // Admin resolves in favor of client (refund)
-        vm.prank(admin);
-        escrow.resolveDispute(jobId, false);
-
-        (, , , , , , , JobEscrow.JobStatus status) = escrow.jobs(jobId);
-        assertEq(uint256(status), uint256(JobEscrow.JobStatus.Cancelled));
-        assertEq(usdc.balanceOf(client), INITIAL_BALANCE);
-    }
-
-    // Reentrancy robustness test
     function testReentrancyAttackApproveAndReleaseFails() public {
-        // Deploy malicious USDC and set up separate escrow and registry for it
         MaliciousUSDC malUsdc = new MaliciousUSDC();
         AgentRegistry malRegistry = new AgentRegistry();
-        JobEscrow malEscrow = new JobEscrow(address(malUsdc), address(malRegistry), admin);
+        JobEscrow malEscrow = new JobEscrow(address(malUsdc), address(malRegistry), admin, 3 days, 1000);
         malRegistry.setEscrowContract(address(malEscrow));
 
-        // Deploy attacker contract (will act as provider)
         ReentrancyAttacker attacker = new ReentrancyAttacker(address(malEscrow), address(malUsdc));
 
-        // Mint malicious tokens
         malUsdc.mint(client, INITIAL_BALANCE);
         malUsdc.mint(address(attacker), INITIAL_BALANCE);
 
-        // Register attacker as agent
         vm.prank(address(attacker));
         malRegistry.registerAgent("ipfs://QmAttackerMetadata");
 
-        // Client creates job
         vm.startPrank(client);
         malUsdc.approve(address(malEscrow), JOB_BUDGET);
         uint256 jobId = malEscrow.createJob(JOB_BUDGET, block.timestamp + DEADLINE, "ipfs://QmAttackJob");
         vm.stopPrank();
 
-        // Attacker accepts job and submits deliverable
-        vm.prank(address(attacker));
+        vm.startPrank(address(attacker));
+        malUsdc.approve(address(malEscrow), STAKE_AMOUNT);
         malEscrow.acceptJob(jobId);
-
-        vm.prank(address(attacker));
         malEscrow.submitDeliverable(jobId, "ipfs://QmMaliciousProof");
+        vm.stopPrank();
 
-        // Set up malicious token callback to attacker
         malUsdc.setAttacker(address(attacker), true);
         attacker.setTarget(jobId, true, false);
 
-        // Client approves and releases. During the token transfer to the attacker,
-        // the malicious USDC contract callbacks the attacker, who attempts to call approveAndRelease again.
-        // It must revert with reentrancy guard error.
         vm.prank(client);
-        vm.expectRevert(); // Reentrancy Guard should revert the nested call
+        vm.expectRevert();
         malEscrow.approveAndRelease(jobId);
     }
 }

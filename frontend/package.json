@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "node --test __tests__/*.test.mjs"
   },
   "dependencies": {
     "@circle-fin/adapter-viem-v2": "^1.14.0",

@@ -25,9 +25,11 @@ contract AgentRegistryTest is Test {
         vm.prank(agent1);
         registry.registerAgent(uri);
 
-        (string memory metadata, uint256 completed, bool active) = registry.agents(agent1);
+        (string memory metadata, uint256 completed, uint256 disputesLost, uint256 volume, bool active) = registry.agents(agent1);
         assertEq(metadata, uri);
         assertEq(completed, 0);
+        assertEq(disputesLost, 0);
+        assertEq(volume, 0);
         assertTrue(active);
     }
 
@@ -40,7 +42,7 @@ contract AgentRegistryTest is Test {
         vm.prank(agent1);
         registry.deactivateAgent();
 
-        (, , bool active) = registry.agents(agent1);
+        (, , , , bool active) = registry.agents(agent1);
         assertFalse(active);
     }
 
@@ -82,8 +84,26 @@ contract AgentRegistryTest is Test {
         vm.prank(escrow);
         registry.incrementJobsCompleted(agent1);
 
-        (, uint256 completed, ) = registry.agents(agent1);
+        (, uint256 completed, , , ) = registry.agents(agent1);
         assertEq(completed, 1);
+    }
+
+    function testRecordVolumeAndDisputesLostOnlyEscrow() public {
+        vm.prank(owner);
+        registry.setEscrowContract(escrow);
+
+        vm.prank(agent1);
+        registry.registerAgent("ipfs://QmAgent1Metadata");
+
+        vm.prank(escrow);
+        registry.recordVolume(agent1, 500 * 10**6);
+
+        vm.prank(escrow);
+        registry.recordDisputeLost(agent1);
+
+        (, , uint256 disputesLost, uint256 volume, ) = registry.agents(agent1);
+        assertEq(volume, 500 * 10**6);
+        assertEq(disputesLost, 1);
     }
 
     function testIncrementJobsCompletedForInactiveDoesNotIncrement() public {
@@ -94,7 +114,7 @@ contract AgentRegistryTest is Test {
         vm.prank(escrow);
         registry.incrementJobsCompleted(agent1);
 
-        (, uint256 completed, ) = registry.agents(agent1);
+        (, uint256 completed, , , ) = registry.agents(agent1);
         assertEq(completed, 0);
     }
 }

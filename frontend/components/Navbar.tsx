@@ -4,9 +4,9 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useAccount, useDisconnect, useConnect, useBalance, useSwitchChain, useReadContract } from 'wagmi'
 import { injected } from 'wagmi/connectors'
-import { formatUnits } from 'viem'
+import { formatUnits, zeroAddress } from 'viem'
 import { arcTestnet } from '../lib/wagmi'
-import { USDC_TOKEN_ADDRESS, USDC_ABI } from '../lib/contracts/contracts'
+import { USDC_TOKEN_ADDRESS, USDC_ABI, AGENT_REGISTRY_ADDRESS, AGENT_REGISTRY_ABI, JOB_ESCROW_ADDRESS } from '../lib/contracts/contracts'
 
 export default function Navbar() {
   const pathname = usePathname()
@@ -14,6 +14,19 @@ export default function Navbar() {
   const { disconnect } = useDisconnect()
   const { connect } = useConnect()
   const { switchChain } = useSwitchChain()
+
+  // Read AgentRegistry -> escrowContract to verify connection status
+  const { data: linkedEscrowAddress, isError: isEscrowCheckError } = useReadContract({
+    address: AGENT_REGISTRY_ADDRESS,
+    abi: AGENT_REGISTRY_ABI,
+    functionName: 'escrowContract',
+    query: {
+      staleTime: 60000,
+    }
+  })
+
+  const isRegistryLinked = linkedEscrowAddress && 
+    linkedEscrowAddress.toLowerCase() === JOB_ESCROW_ADDRESS.toLowerCase()
 
   // Native balance (Gas USDC on Arc Testnet has 18 decimals)
   const { data: nativeBalance } = useBalance({
@@ -46,6 +59,13 @@ export default function Navbar() {
 
   return (
     <nav className="sticky top-0 z-50 w-full border-b border-gray-800 bg-gray-950/80 backdrop-blur-xl">
+      {/* Registry Connection Warning Bar */}
+      {(!isRegistryLinked || isEscrowCheckError) && (
+        <div className="w-full bg-amber-500/15 border-b border-amber-500/30 py-1 px-4 text-center text-xs text-amber-300 font-medium flex items-center justify-center gap-2">
+          <span>⚠️ Warning: AgentRegistry is not linked to JobEscrow (`setEscrowContract` uninitialized).</span>
+        </div>
+      )}
+
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <div className="flex h-16 items-center justify-between">
           {/* Logo / Brand */}

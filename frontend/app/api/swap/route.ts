@@ -1,11 +1,13 @@
 import { NextResponse } from 'next/server'
 import { AppKit } from '@circle-fin/app-kit'
 import { createViemAdapterFromPrivateKey } from '@circle-fin/adapter-viem-v2'
-import { createPublicClient, createWalletClient, http, parseUnits, formatUnits } from 'viem'
+import { createPublicClient, createWalletClient, http, parseUnits, formatUnits, parseAbiItem, isAddress } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { arcTestnet } from '@/lib/wagmi'
 
+const USDC_ADDRESS = '0x3600000000000000000000000000000000000000'
 const EURC_ADDRESS = '0x3600000000000000000000000000000000000001'
+
 const EURC_ABI = [
   {
     "inputs": [
@@ -26,14 +28,73 @@ const EURC_ABI = [
     "stateMutability": "view",
     "type": "function"
   }
-]
+] as const
+
+const MAX_SWAP_AMOUNT = 100 // 100 USDC upper limit
+const RATE_LIMIT_WINDOW_MS = 60 * 1000 // 1 minute
+const MAX_REQUESTS_PER_WINDOW = 5
+
+// In-memory stores for idempotency, rate limiting, and failed deposit tracking
+export const usedDepositTxHashes = new Set<string>()
+const rateLimitMap = new Map<string, { count: number; windowStart: number }>()
+export const failedDeposits = new Map<string, { agentAddress: `0x${string}`; amount: string; timestamp: number }>()
+
+function checkRateLimit(identifier: string): boolean {
+  const now = Date.now()
+  const record = rateLimitMap.get(identifier)
+
+  if (!record || now - record.windowStart > RATE_LIMIT_WINDOW_MS) {
+    rateLimitMap.set(identifier, { count: 1, windowStart: now })
+    return true
+  }
+
+  if (record.count >= MAX_REQUESTS_PER_WINDOW) {
+    return false
+  }
+
+  record.count += 1
+  return true
+}
 
 export async function POST(request: Request) {
   try {
-    const { amount, agentAddress } = await request.json()
+    const { userDepositTxHash, amount, agentAddress } = await request.json()
 
-    if (!amount || !agentAddress) {
-      return NextResponse.json({ error: 'Missing amount or agentAddress' }, { status: 400 })
+    // Basic Input Validation
+    if (!userDepositTxHash || !amount || !agentAddress) {
+      return NextResponse.json({ 
+        error: 'Missing required parameters: userDepositTxHash, amount, agentAddress' 
+      }, { status: 400 })
+    }
+
+    if (!isAddress(agentAddress)) {
+      return NextResponse.json({ error: 'Invalid agentAddress format' }, { status: 400 })
+    }
+
+    const numAmount = Number(amount)
+    if (isNaN(numAmount) || numAmount <= 0) {
+      return NextResponse.json({ error: 'Amount must be a positive number' }, { status: 400 })
+    }
+
+    if (numAmount > MAX_SWAP_AMOUNT) {
+      return NextResponse.json({ 
+        error: `Swap amount exceeds maximum allowed threshold of ${MAX_SWAP_AMOUNT} USDC` 
+      }, { status: 400 })
+    }
+
+    // Rate Limiting
+    if (!checkRateLimit(agentAddress.toLowerCase())) {
+      return NextResponse.json({ 
+        error: 'Rate limit exceeded. Please wait a minute before attempting another swap.' 
+      }, { status: 429 })
+    }
+
+    // Replay / Idempotency Protection
+    const normalizedTxHash = userDepositTxHash.toLowerCase() as `0x${string}`
+    if (usedDepositTxHashes.has(normalizedTxHash)) {
+      return NextResponse.json({ 
+        error: 'This deposit transaction hash has already been processed (replay protection).' 
+      }, { status: 400 })
     }
 
     let rawPrivateKey = process.env.PRIVATE_KEY || process.env.DEPLOYER_PRIVATE_KEY
@@ -41,7 +102,7 @@ export async function POST(request: Request) {
 
     if (!rawPrivateKey) {
       return NextResponse.json({ 
-        error: 'Server PRIVATE_KEY is not configured in environment variables. Please add PRIVATE_KEY in Vercel Project Settings -> Environment Variables and redeploy.' 
+        error: 'Server PRIVATE_KEY is not configured in environment variables.' 
       }, { status: 500 })
     }
 
@@ -53,11 +114,11 @@ export async function POST(request: Request) {
 
     if (!kitKey || kitKey === 'your_circle_kit_key_here') {
       return NextResponse.json({ 
-        error: 'Circle App Kit Key (CIRCLE_KIT_KEY) is not configured in Vercel environment variables.' 
+        error: 'Circle App Kit Key (CIRCLE_KIT_KEY) is not configured.' 
       }, { status: 400 })
     }
 
-    // 1. Initialize Viem Clients for the Deployer/Server account
+    // Initialize Viem Clients for the Deployer/Server account
     const account = privateKeyToAccount(privateKey)
     
     const publicClient = createPublicClient({
@@ -71,97 +132,164 @@ export async function POST(request: Request) {
       transport: http(process.env.RPC_URL || 'https://rpc.testnet.arc.network')
     })
 
-    // 2. Initialize the Circle App Kit Viem Adapter
-    const viemAdapter = createViemAdapterFromPrivateKey({
-      privateKey,
-      getPublicClient: () => publicClient,
-      getWalletClient: async () => walletClient
-    })
+    // On-Chain Transaction Verification
+    console.log(`[API Swap] Verifying user deposit tx: ${normalizedTxHash}...`)
+    
+    const [receipt, tx] = await Promise.all([
+      publicClient.getTransactionReceipt({ hash: normalizedTxHash }).catch(() => null),
+      publicClient.getTransaction({ hash: normalizedTxHash }).catch(() => null)
+    ])
 
-    const kit = new AppKit()
-
-    // Fetch live EUR/USD price feed from RedStone Oracle (Arc's official ecosystem oracle partner)
-    let oracleEurRate = 1.08 // default fallback EUR/USD rate
-    try {
-      const redstoneRes = await fetch('https://api.redstone.finance/prices?symbol=EUR&provider=redstone-primary-prod', {
-        cache: 'no-store'
-      })
-      const redstoneData = await redstoneRes.json()
-      if (Array.isArray(redstoneData) && redstoneData[0] && redstoneData[0].value) {
-        oracleEurRate = redstoneData[0].value
-        console.log('[API Swap] Fetched RedStone Oracle EUR/USD rate:', oracleEurRate)
-      }
-    } catch (oracleErr) {
-      console.warn('[API Swap] RedStone Oracle fetch error, using fallback rate:', oracleErr)
+    if (!receipt || !tx) {
+      return NextResponse.json({ 
+        error: 'Deposit transaction not found on-chain. Please ensure the transaction has been submitted and confirmed.' 
+      }, { status: 400 })
     }
 
-    // Read server EURC balance BEFORE swap
-    const balanceBefore = await publicClient.readContract({
-      address: EURC_ADDRESS,
-      abi: EURC_ABI,
-      functionName: 'balanceOf',
-      args: [account.address]
-    }) as bigint
+    if (receipt.status !== 'success') {
+      return NextResponse.json({ error: 'Deposit transaction failed on-chain.' }, { status: 400 })
+    }
 
-    console.log(`[API Swap] Swapping ${amount} USDC to EURC for agent ${agentAddress} using RedStone Oracle rate (${oracleEurRate} USD/EUR)...`)
+    if (tx.from.toLowerCase() !== agentAddress.toLowerCase()) {
+      return NextResponse.json({ 
+        error: `Deposit transaction sender (${tx.from}) does not match agentAddress (${agentAddress}).` 
+      }, { status: 400 })
+    }
 
-    // 3. Perform the Same-Chain Swap on Arc Testnet using Circle App Kit
-    const swapResult = await kit.swap({
-      from: {
-        adapter: viemAdapter,
-        chain: 'Arc_Testnet'
-      },
-      tokenIn: 'USDC',
-      tokenOut: 'EURC',
-      amountIn: amount,
-      config: {
-        slippageBps: 300, // 3% slippage tolerance
-        kitKey: kitKey
+    // Validate recipient and amount (ERC-20 transfer or Native gas transfer)
+    let isVerifiedDeposit = false
+    const expectedErc20Amount = parseUnits(amount, 6)
+    const expectedNativeAmount = parseUnits(amount, 18)
+
+    // Case 1: ERC-20 USDC Transfer to server account
+    if (tx.to && tx.to.toLowerCase() === USDC_ADDRESS.toLowerCase()) {
+      for (const log of receipt.logs) {
+        if (log.address.toLowerCase() === USDC_ADDRESS.toLowerCase()) {
+          try {
+            if (
+              log.topics[1]?.toLowerCase().includes(agentAddress.slice(2).toLowerCase()) &&
+              log.topics[2]?.toLowerCase().includes(account.address.slice(2).toLowerCase())
+            ) {
+              const logAmount = BigInt(log.data)
+              if (logAmount >= expectedErc20Amount) {
+                isVerifiedDeposit = true
+                break
+              }
+            }
+          } catch {}
+        }
       }
-    })
+    } 
+    // Case 2: Native gas USDC transfer directly to server address
+    else if (tx.to && tx.to.toLowerCase() === account.address.toLowerCase()) {
+      if (tx.value >= expectedNativeAmount || tx.value >= expectedErc20Amount) {
+        isVerifiedDeposit = true
+      }
+    }
 
-    console.log('[API Swap] Swap complete. Tx Hash:', swapResult.txHash)
+    if (!isVerifiedDeposit) {
+      return NextResponse.json({ 
+        error: 'Deposit transaction verification failed: transfer recipient must be server address and amount must match.' 
+      }, { status: 400 })
+    }
 
-    // Read server EURC balance AFTER swap to calculate exact market output
-    const balanceAfter = await publicClient.readContract({
-      address: EURC_ADDRESS,
-      abi: EURC_ABI,
-      functionName: 'balanceOf',
-      args: [account.address]
-    }) as bigint
+    // Mark tx hash as used (Idempotency)
+    usedDepositTxHashes.add(normalizedTxHash)
 
-    const actualEurcReceived = balanceAfter - balanceBefore
+    // Execute Swap & Transfer with Error Recovery Strategy
+    try {
+      const viemAdapter = createViemAdapterFromPrivateKey({
+        privateKey,
+        getPublicClient: () => publicClient,
+        getWalletClient: async () => walletClient
+      })
 
-    // Calculate dynamic EURC payout based on RedStone Oracle rate
-    const calculatedEurcFromOracle = parseUnits((Number(amount) / oracleEurRate).toFixed(6), 6)
+      const kit = new AppKit()
 
-    // Use actual DEX received balance if positive, otherwise use RedStone Oracle calculated amount
-    const finalEurcToTransfer = actualEurcReceived > 0n ? actualEurcReceived : calculatedEurcFromOracle
+      let oracleEurRate = 1.08
+      try {
+        const redstoneRes = await fetch('https://api.redstone.finance/prices?symbol=EUR&provider=redstone-primary-prod', {
+          cache: 'no-store'
+        })
+        const redstoneData = await redstoneRes.json()
+        if (Array.isArray(redstoneData) && redstoneData[0] && redstoneData[0].value) {
+          oracleEurRate = redstoneData[0].value
+        }
+      } catch (oracleErr) {
+        console.warn('[API Swap] RedStone Oracle fetch error, using fallback rate:', oracleErr)
+      }
 
-    console.log(`[API Swap] Transferring ${formatUnits(finalEurcToTransfer, 6)} EURC (RedStone Oracle rate output) to agent ${agentAddress}...`)
-    
-    const transferTx = await walletClient.writeContract({
-      address: EURC_ADDRESS,
-      abi: EURC_ABI,
-      functionName: 'transfer',
-      args: [agentAddress, finalEurcToTransfer]
-    })
+      const balanceBefore = await publicClient.readContract({
+        address: EURC_ADDRESS,
+        abi: EURC_ABI,
+        functionName: 'balanceOf',
+        args: [account.address]
+      }) as bigint
 
-    return NextResponse.json({
-      success: true,
-      swapTxHash: swapResult.txHash,
-      transferTxHash: transferTx,
-      amount,
-      eurcAmount: formatUnits(finalEurcToTransfer, 6),
-      oracleProvider: 'RedStone Oracle',
-      oracleEurUsdRate: oracleEurRate,
-      recipient: agentAddress
-    })
+      const swapResult = await kit.swap({
+        from: {
+          adapter: viemAdapter,
+          chain: 'Arc_Testnet'
+        },
+        tokenIn: 'USDC',
+        tokenOut: 'EURC',
+        amountIn: amount,
+        config: {
+          slippageBps: 300,
+          kitKey: kitKey
+        }
+      })
+
+      const balanceAfter = await publicClient.readContract({
+        address: EURC_ADDRESS,
+        abi: EURC_ABI,
+        functionName: 'balanceOf',
+        args: [account.address]
+      }) as bigint
+
+      const actualEurcReceived = balanceAfter - balanceBefore
+      const calculatedEurcFromOracle = parseUnits((Number(amount) / oracleEurRate).toFixed(6), 6)
+      const finalEurcToTransfer = actualEurcReceived > 0n ? actualEurcReceived : calculatedEurcFromOracle
+
+      const transferTx = await walletClient.writeContract({
+        address: EURC_ADDRESS,
+        abi: EURC_ABI,
+        functionName: 'transfer',
+        args: [agentAddress as `0x${string}`, finalEurcToTransfer]
+      })
+
+      return NextResponse.json({
+        success: true,
+        userDepositTxHash: normalizedTxHash,
+        swapTxHash: swapResult.txHash,
+        transferTxHash: transferTx,
+        amount,
+        eurcAmount: formatUnits(finalEurcToTransfer, 6),
+        oracleProvider: 'RedStone Oracle',
+        oracleEurUsdRate: oracleEurRate,
+        recipient: agentAddress
+      })
+
+    } catch (swapError: any) {
+      console.error('[API Swap] Swap execution failed after deposit verification:', swapError)
+      // Record failed deposit to allow user refund via /api/swap/refund
+      failedDeposits.set(normalizedTxHash, {
+        agentAddress: agentAddress as `0x${string}`,
+        amount,
+        timestamp: Date.now()
+      })
+
+      return NextResponse.json({
+        error: `Deposit verified, but swap step failed: ${swapError.message || 'Swap error'}. You can call /api/swap/refund with your deposit tx hash to claim a refund.`,
+        refundable: true,
+        userDepositTxHash: normalizedTxHash
+      }, { status: 500 })
+    }
 
   } catch (error: any) {
     console.error('[API Swap] Error:', error)
     return NextResponse.json({ 
-      error: error.message || 'An error occurred during the App Kit swap operation.' 
+      error: error.message || 'An error occurred during the swap operation.' 
     }, { status: 500 })
   }
 }
