@@ -66,7 +66,7 @@ export default function AnalyticsSummary() {
 
       results.forEach((res: any) => {
         if (res.status === 'success' && res.result) {
-          const status = Number(res.result[9] !== undefined ? res.result[9] : res.result[7])
+          const status = Number(Array.isArray(res.result) ? res.result[res.result.length - 1] : res.result?.status ?? 0)
           if ([0, 1, 2].includes(status)) {
             activeCount++
           } else if (status === 3) {

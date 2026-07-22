@@ -25,6 +25,20 @@ interface JobData {
   status: number
 }
 
+function formatUserError(err: any): string {
+  const msg = err?.shortMessage || err?.message || String(err)
+  if (msg.includes('user rejected') || msg.includes('User rejected')) {
+    return 'Transaction was cancelled in your wallet.'
+  }
+  if (msg.includes('Metadata URI cannot be empty')) {
+    return 'Metadata URI cannot be empty.'
+  }
+  if (msg.includes('is not active') || msg.includes('already registered')) {
+    return 'Agent is already registered or inactive.'
+  }
+  return err?.shortMessage || msg.split('\n')[0] || 'Contract transaction failed.'
+}
+
 export default function AgentPortal() {
   const { address, isConnected, chainId } = useAccount()
   const [metadataURI, setMetadataURI] = useState('')
@@ -74,7 +88,7 @@ export default function AgentPortal() {
 
   const { writeContractAsync } = useWriteContract()
 
-  // Read agent registration info & expanded reputation from AgentRegistry
+  // Read agent registration info from AgentRegistry (handles both 3-tuple and 5-tuple returns)
   const { data: agentInfo, refetch: refetchAgentInfo } = useReadContract({
     address: AGENT_REGISTRY_ADDRESS,
     abi: AGENT_REGISTRY_ABI,
@@ -87,11 +101,12 @@ export default function AgentPortal() {
     },
   })
 
-  const isRegistered = agentInfo ? Boolean((agentInfo as any)[4]) : false
-  const jobsCompletedCount = agentInfo ? Number((agentInfo as any)[1]) : 0
-  const disputesLostCount = agentInfo ? Number((agentInfo as any)[2]) : 0
-  const totalVolumeUSDC = agentInfo ? BigInt((agentInfo as any)[3] || 0) : 0n
-  const agentMetadata = agentInfo ? (agentInfo as any)[0] : ''
+  const is5Tuple = Array.isArray(agentInfo) && agentInfo.length >= 5
+  const agentMetadata = agentInfo ? String((agentInfo as any)[0] || '') : ''
+  const jobsCompletedCount = agentInfo ? Number((agentInfo as any)[1] || 0) : 0
+  const disputesLostCount = agentInfo && is5Tuple ? Number((agentInfo as any)[2] || 0) : 0
+  const totalVolumeUSDC = agentInfo && is5Tuple ? BigInt((agentInfo as any)[3] || 0) : 0n
+  const isRegistered = agentInfo ? Boolean(is5Tuple ? (agentInfo as any)[4] : (agentInfo as any)[2]) : false
 
   const isCorrectNetwork = chainId === arcTestnet.id
 
@@ -141,13 +156,13 @@ export default function AgentPortal() {
           const job = res.result
           return {
             id: Number(job[0]),
-            client: job[1],
-            provider: job[2],
-            amount: job[3],
-            deadline: job[4],
-            descriptionURI: job[5],
-            proofURI: job[6],
-            status: job[7],
+            client: String(job[1]),
+            provider: String(job[2]),
+            amount: BigInt(job[3]),
+            deadline: BigInt(job[4]),
+            descriptionURI: String(job[5]),
+            proofURI: String(job[6]),
+            status: Number(job[7]),
           }
         })
 
@@ -203,7 +218,7 @@ export default function AgentPortal() {
       }, 3000)
     } catch (err: any) {
       console.error(err)
-      setErrorMsg(err.message || 'Registration transaction failed.')
+      setErrorMsg(formatUserError(err))
       setLoading(false)
     }
   }
@@ -228,31 +243,16 @@ export default function AgentPortal() {
       }, 3000)
     } catch (err: any) {
       console.error(err)
-      setErrorMsg(err.message || 'Deactivation transaction failed.')
+      setErrorMsg(formatUserError(err))
       setLoading(false)
     }
   }
 
-  // Accept Job Handler (with collateral staking approval)
+  // Accept Job Handler
   const handleAcceptJob = async (jobId: number, amount: bigint) => {
     try {
       setErrorMsg(null)
-      const stakeAmount = (amount * 1000n) / 10000n // 10% collateral staking
 
-      if (stakeAmount > 0n) {
-        alert(`Accepting Job #${jobId} requires 10% USDC collateral staking (${formatUnits(stakeAmount, 6)} USDC).\n\nStep 1: Approving USDC collateral...`)
-        const approveHash = await writeContractAsync({
-          address: USDC_TOKEN_ADDRESS,
-          abi: USDC_ABI,
-          functionName: 'approve',
-          args: [JOB_ESCROW_ADDRESS, stakeAmount],
-        })
-
-        const client = createPublicClient({ chain: arcTestnet, transport: http('/api/rpc') })
-        await client.waitForTransactionReceipt({ hash: approveHash })
-      }
-
-      alert(`Step 2: Confirming acceptJob transaction...`)
       const hash = await writeContractAsync({
         address: JOB_ESCROW_ADDRESS,
         abi: JOB_ESCROW_ABI,
@@ -265,7 +265,7 @@ export default function AgentPortal() {
       }, 3000)
     } catch (err: any) {
       console.error(err)
-      alert(`Could not accept job: ${err.message || err}`)
+      alert(formatUserError(err))
     }
   }
 
@@ -288,7 +288,7 @@ export default function AgentPortal() {
       }, 3000)
     } catch (err: any) {
       console.error(err)
-      alert(`Submission failed: ${err.message || err}`)
+      alert(formatUserError(err))
     }
   }
 
@@ -335,7 +335,7 @@ export default function AgentPortal() {
       }
     } catch (err: any) {
       console.error(err)
-      alert(`Swap failed: ${err.message || err}`)
+      alert(formatUserError(err))
     } finally {
       setSwapLoading(null)
     }
@@ -347,7 +347,7 @@ export default function AgentPortal() {
       <div className="border-b border-gray-800 pb-6 mb-8">
         <h1 className="text-3xl font-bold tracking-tight text-white sm:text-4xl">Agent Portal</h1>
         <p className="mt-2 text-sm text-gray-400">
-          Register your agent profile, accept contract work, stake collateral, and view on-chain reputation stats.
+          Register your agent profile, accept contract work, and view on-chain reputation stats.
         </p>
       </div>
 
@@ -581,7 +581,6 @@ export default function AgentPortal() {
                         <h4 className="text-sm font-semibold text-gray-200 mt-1">{job.descriptionURI}</h4>
                         <p className="text-xs text-gray-400 mt-0.5">
                           Budget: <span className="font-semibold text-blue-400">{formatUnits(job.amount, 6)} USDC</span>
-                          <span className="text-gray-500 ml-2">(Stake required: {formatUnits((job.amount * 1000n) / 10000n, 6)} USDC)</span>
                         </p>
                       </div>
 
@@ -591,7 +590,7 @@ export default function AgentPortal() {
                             onClick={() => handleAcceptJob(job.id, job.amount)}
                             className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500 transition-all"
                           >
-                            Accept Job (10% Stake)
+                            Accept Job
                           </button>
                         ) : (
                           <span className="text-[10px] text-gray-500 max-w-28 text-center italic">

@@ -2,8 +2,7 @@ import { NextResponse } from 'next/server'
 
 // Simple in-memory cache for JSON-RPC read calls (eth_call, eth_blockNumber, eth_getBalance)
 const cache = new Map<string, { data: any; expiry: number }>()
-const CACHE_TTL_MS = 6000 // Cache read calls for 6 seconds
-const RATE_LIMIT_CACHE_TTL_MS = 15000 // Cache rate limit errors for 15 seconds
+const CACHE_TTL_MS = 4000 // Cache successful read calls for 4 seconds
 
 // In-flight requests map for deduplication
 const inFlight = new Map<string, Promise<any>>()
@@ -20,7 +19,7 @@ export async function POST(request: Request) {
       body.method === 'eth_getBalance'
 
     if (isReadCall) {
-      // 1. Check cache (including cached rate limit errors)
+      // 1. Check cache (only for successful previous data)
       const cached = cache.get(requestKey)
       if (cached && cached.expiry > Date.now()) {
         return NextResponse.json(cached.data)
@@ -36,60 +35,53 @@ export async function POST(request: Request) {
 
     const rpcUrl = process.env.RPC_URL || 'https://rpc.testnet.arc.network'
 
-    // 3. Make fetch promise
+    // 3. Make fetch promise with retry for rate limits
     const fetchPromise = (async () => {
       try {
-        const response = await fetch(rpcUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(body),
-          // Prevent Next.js default fetch cache from breaking dynamic JSON-RPC payloads
-          cache: 'no-store',
-        })
+        let attempts = 0
+        let data: any = null
 
-        // Check if HTTP status is rate limited (e.g. 429)
-        let isRateLimited = response.status === 429 || !response.ok
-        let data: any
+        while (attempts < 3) {
+          attempts++
+          const response = await fetch(rpcUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(body),
+            cache: 'no-store',
+          })
 
-        try {
-          data = await response.json()
-        } catch (err) {
-          data = { error: { code: response.status, message: 'Invalid JSON response from RPC' } }
-          isRateLimited = true
-        }
+          try {
+            data = await response.json()
+          } catch {
+            data = { error: { code: response.status, message: 'Invalid JSON response from RPC' } }
+          }
 
-        // Check if JSON-RPC payload reports rate limit
-        if (data && data.error) {
-          const errMsg = String(data.error.message || '').toLowerCase()
-          if (
+          const errMsg = String(data?.error?.message || '').toLowerCase()
+          const isRateLimited =
+            response.status === 429 ||
             errMsg.includes('limit') ||
             errMsg.includes('rate') ||
             errMsg.includes('too many') ||
-            data.error.code === 429 ||
-            data.error.code === -32005
-          ) {
-            isRateLimited = true
+            data?.error?.code === 429 ||
+            data?.error?.code === -32005
+
+          if (isRateLimited && attempts < 3) {
+            // Wait 500ms before retrying RPC request
+            await new Promise((r) => setTimeout(r, 500 * attempts))
+            continue
           }
-        }
 
-        // If rate limited, cache the error for 15 seconds to prevent RPC spam
-        if (isRateLimited && isReadCall) {
-          const rateLimitError = data || { error: { code: 429, message: 'request limit reached (cached proxy)' } }
-          cache.set(requestKey, {
-            data: rateLimitError,
-            expiry: Date.now() + RATE_LIMIT_CACHE_TTL_MS,
-          })
-          return rateLimitError
-        }
+          // Successful read call: store in cache for 4s
+          if (isReadCall && data && !data.error) {
+            cache.set(requestKey, {
+              data,
+              expiry: Date.now() + CACHE_TTL_MS,
+            })
+          }
 
-        // Cache successful read data for 6 seconds
-        if (isReadCall && !data.error) {
-          cache.set(requestKey, {
-            data,
-            expiry: Date.now() + CACHE_TTL_MS,
-          })
+          return data
         }
 
         return data

@@ -12,9 +12,7 @@ interface JobData {
   client: string
   provider: string
   amount: bigint
-  stakeAmount: bigint
   deadline: bigint
-  submittedAt: bigint
   descriptionURI: string
   proofURI: string
   status: number
@@ -85,15 +83,13 @@ export default function Marketplace() {
             const job = res.result
             return {
               id: Number(job[0]),
-              client: job[1],
-              provider: job[2],
-              amount: job[3],
-              stakeAmount: job[4] || 0n,
-              deadline: job[5],
-              submittedAt: job[6] || 0n,
-              descriptionURI: job[7],
-              proofURI: job[8],
-              status: job[9],
+              client: String(job[1]),
+              provider: String(job[2]),
+              amount: BigInt(job[3]),
+              deadline: BigInt(job[4]),
+              descriptionURI: String(job[5]),
+              proofURI: String(job[6]),
+              status: Number(job[7]),
             }
           })
 
@@ -121,7 +117,7 @@ export default function Marketplace() {
             Job Marketplace
           </h1>
           <p className="mt-2 text-sm text-gray-400">
-            Browse active jobs or hire AI agents securely on Arc Testnet with USDC Escrow & Collateral Staking.
+            Browse active jobs or hire AI agents securely on Arc Testnet with USDC Escrow.
           </p>
         </div>
         <div className="mt-4 flex md:ml-4 md:mt-0">
@@ -191,10 +187,10 @@ export default function Marketplace() {
                   <span className="font-mono text-xs text-gray-500">JOB #{job.id}</span>
                   <span
                     className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset ${
-                      STATUS_COLORS[job.status]
+                      STATUS_COLORS[job.status] || STATUS_COLORS[0]
                     }`}
                   >
-                    {STATUS_LABELS[job.status]}
+                    {STATUS_LABELS[job.status] || 'Unknown'}
                   </span>
                 </div>
 

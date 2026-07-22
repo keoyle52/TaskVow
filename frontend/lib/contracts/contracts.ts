@@ -32,8 +32,6 @@ export const AGENT_REGISTRY_ABI = [
     "outputs": [
       { "name": "metadataURI", "type": "string" },
       { "name": "jobsCompleted", "type": "uint256" },
-      { "name": "disputesLost", "type": "uint256" },
-      { "name": "totalVolumeUSDC", "type": "uint256" },
       { "name": "active", "type": "bool" }
     ]
   },
@@ -131,9 +129,7 @@ export const JOB_ESCROW_ABI = [
       { "name": "client", "type": "address" },
       { "name": "provider", "type": "address" },
       { "name": "amount", "type": "uint256" },
-      { "name": "stakeAmount", "type": "uint256" },
       { "name": "deadline", "type": "uint256" },
-      { "name": "submittedAt", "type": "uint256" },
       { "name": "descriptionURI", "type": "string" },
       { "name": "proofURI", "type": "string" },
       { "name": "status", "type": "uint8" }
@@ -177,8 +173,7 @@ export const JOB_ESCROW_ABI = [
     "name": "JobAccepted",
     "inputs": [
       { "indexed": true, "name": "jobId", "type": "uint256" },
-      { "indexed": true, "name": "provider", "type": "address" },
-      { "indexed": false, "name": "stakeAmount", "type": "uint256" }
+      { "indexed": true, "name": "provider", "type": "address" }
     ],
     "anonymous": false
   },
@@ -187,8 +182,7 @@ export const JOB_ESCROW_ABI = [
     "name": "DeliverableSubmitted",
     "inputs": [
       { "indexed": true, "name": "jobId", "type": "uint256" },
-      { "indexed": false, "name": "proofURI", "type": "string" },
-      { "indexed": false, "name": "submittedAt", "type": "uint256" }
+      { "indexed": false, "name": "proofURI", "type": "string" }
     ],
     "anonymous": false
   },
@@ -198,17 +192,7 @@ export const JOB_ESCROW_ABI = [
     "inputs": [
       { "indexed": true, "name": "jobId", "type": "uint256" },
       { "indexed": true, "name": "provider", "type": "address" },
-      { "indexed": false, "name": "totalAmount", "type": "uint256" }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "TimeoutReleaseClaimed",
-    "inputs": [
-      { "indexed": true, "name": "jobId", "type": "uint256" },
-      { "indexed": true, "name": "provider", "type": "address" },
-      { "indexed": false, "name": "totalAmount", "type": "uint256" }
+      { "indexed": false, "name": "amount", "type": "uint256" }
     ],
     "anonymous": false
   },
