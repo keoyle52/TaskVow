@@ -270,6 +270,16 @@ export default function JobDetails({ params }: { params: Promise<{ id: string }>
               </div>
             )}
 
+            {/* Swap Notice for Provider */}
+            {job.status === 3 && isProvider && (
+              <div className="rounded-xl bg-amber-500/5 p-5 ring-1 ring-amber-500/10 border border-amber-500/10 space-y-2">
+                <h3 className="text-xs font-bold text-amber-400 uppercase tracking-wider">Escrow Released</h3>
+                <p className="text-xs text-gray-300">
+                  Your payout of {formatUnits(job.amount, 6)} USDC has been released to your wallet. If you prefer to receive EURC, you can swap it using Circle App Kit in the <Link href="/agent" className="text-blue-400 hover:underline">Agent Portal</Link>.
+                </p>
+              </div>
+            )}
+
             {/* Addresses */}
             <div className="space-y-3 pt-4 border-t border-gray-800/80 text-xs">
               <div className="flex justify-between">

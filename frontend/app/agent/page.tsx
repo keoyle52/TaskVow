@@ -35,6 +35,41 @@ export default function AgentPortal() {
   const [myJobs, setMyJobs] = useState<JobData[]>([])
   const [jobsLoading, setJobsLoading] = useState(true)
 
+  // Payout preference & Swapped jobs state
+  const [prefCurrency, setPrefCurrency] = useState<'USDC' | 'EURC'>('USDC')
+  const [swappedJobs, setSwappedJobs] = useState<number[]>([])
+  const [swapLoading, setSwapLoading] = useState<number | null>(null)
+
+  // Load preferences from localStorage on mount/address change
+  useEffect(() => {
+    if (address) {
+      const stored = localStorage.getItem(`taskvow_pref_currency_${address.toLowerCase()}`)
+      if (stored === 'EURC' || stored === 'USDC') {
+        setPrefCurrency(stored)
+      } else {
+        setPrefCurrency('USDC')
+      }
+
+      const storedSwapped = localStorage.getItem(`taskvow_swapped_jobs_${address.toLowerCase()}`)
+      if (storedSwapped) {
+        try {
+          setSwappedJobs(JSON.parse(storedSwapped))
+        } catch {
+          setSwappedJobs([])
+        }
+      } else {
+        setSwappedJobs([])
+      }
+    }
+  }, [address])
+
+  const handleSetPrefCurrency = (curr: 'USDC' | 'EURC') => {
+    if (address) {
+      localStorage.setItem(`taskvow_pref_currency_${address.toLowerCase()}`, curr)
+      setPrefCurrency(curr)
+    }
+  }
+
   const { writeContractAsync } = useWriteContract()
 
   // Read agent registration info from AgentRegistry
@@ -118,12 +153,12 @@ export default function AgentPortal() {
       // Filter open jobs (Status: Created = 0)
       const available = formattedJobs.filter((job) => job.status === 0)
       
-      // Filter agent's active jobs (Provider is self and Status is Accepted = 1 or Submitted = 2 or Disputed = 4)
+      // Filter agent's active/settled jobs (Provider is self and Status is Accepted = 1 or Submitted = 2 or Settled = 3 or Disputed = 4)
       const assigned = formattedJobs.filter(
         (job) =>
           address &&
           job.provider.toLowerCase() === address.toLowerCase() &&
-          [1, 2, 4].includes(job.status)
+          [1, 2, 3, 4].includes(job.status)
       )
 
       setOpenJobs(available)
@@ -244,6 +279,41 @@ export default function AgentPortal() {
     }
   }
 
+  // App Kit Swap Handler
+  const handleAppKitSwap = async (jobId: number, amount: string) => {
+    try {
+      setSwapLoading(jobId)
+      setErrorMsg(null)
+
+      const response = await fetch('/api/swap', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ amount, agentAddress: address }),
+      })
+
+      const data = await response.json()
+
+      if (!response.ok || data.error) {
+        throw new Error(data.error || 'Failed to execute swap on the server.')
+      }
+
+      alert(`Success! Swap transaction submitted successfully.\n\nSwap Tx: ${data.swapTxHash.slice(0, 15)}...\nTransfer Tx: ${data.transferTxHash.slice(0, 15)}...`)
+      
+      const newSwapped = [...swappedJobs, jobId]
+      setSwappedJobs(newSwapped)
+      if (address) {
+        localStorage.setItem(`taskvow_swapped_jobs_${address.toLowerCase()}`, JSON.stringify(newSwapped))
+      }
+    } catch (err: any) {
+      console.error(err)
+      alert(`Swap failed: ${err.message || err}`)
+    } finally {
+      setSwapLoading(null)
+    }
+  }
+
   return (
     <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
       {/* Header */}
@@ -335,6 +405,39 @@ export default function AgentPortal() {
                 </form>
               )}
             </div>
+
+            {isRegistered && (
+              <div className="rounded-2xl bg-gray-900/40 p-6 ring-1 ring-gray-800 shadow-2xl space-y-4">
+                <h2 className="text-lg font-bold text-white">Payout Preference</h2>
+                <p className="text-xs text-gray-400">
+                  Select your preferred settlement currency. When jobs are released, you can swap your USDC payout.
+                </p>
+                <div className="flex gap-4 pt-2">
+                  <label className="flex items-center gap-2 text-xs text-gray-200 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="prefCurrency"
+                      value="USDC"
+                      checked={prefCurrency === 'USDC'}
+                      onChange={() => handleSetPrefCurrency('USDC')}
+                      className="accent-blue-500"
+                    />
+                    <span>USDC (Default)</span>
+                  </label>
+                  <label className="flex items-center gap-2 text-xs text-gray-200 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="prefCurrency"
+                      value="EURC"
+                      checked={prefCurrency === 'EURC'}
+                      onChange={() => handleSetPrefCurrency('EURC')}
+                      className="accent-blue-500"
+                    />
+                    <span>EURC (App Kit Swap)</span>
+                  </label>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Right Column: Worklists */}
@@ -360,6 +463,7 @@ export default function AgentPortal() {
                           <span className="text-[10px] uppercase font-bold text-blue-400">
                             {job.status === 1 && 'Accepted (In Progress)'}
                             {job.status === 2 && 'Submitted (Pending Approval)'}
+                            {job.status === 3 && 'Settled (Funds Released)'}
                             {job.status === 4 && 'Disputed'}
                           </span>
                         </div>
@@ -375,6 +479,31 @@ export default function AgentPortal() {
                           >
                             Submit Deliverable
                           </button>
+                        )}
+                        {job.status === 3 && prefCurrency === 'EURC' && (
+                          <>
+                            {swappedJobs.includes(job.id) ? (
+                              <span className="text-[10px] uppercase font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-1.5 rounded-lg border border-emerald-500/20">
+                                Swapped to EURC
+                              </span>
+                            ) : (
+                              <button
+                                onClick={() => handleAppKitSwap(job.id, formatUnits(job.amount, 6))}
+                                disabled={swapLoading === job.id}
+                                className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-500 transition-all flex items-center gap-1.5"
+                              >
+                                {swapLoading === job.id && (
+                                  <div className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                                )}
+                                Swap to EURC
+                              </button>
+                            )}
+                          </>
+                        )}
+                        {job.status === 3 && prefCurrency === 'USDC' && (
+                          <span className="text-[10px] uppercase font-bold text-gray-400 bg-gray-900 px-2.5 py-1.5 rounded-lg border border-gray-800">
+                            Paid in USDC
+                          </span>
                         )}
                         <Link
                           href={`/job/${job.id}`}
