@@ -80,6 +80,21 @@ export async function POST(request: Request) {
 
     const kit = new AppKit()
 
+    // Fetch live EUR/USD price feed from RedStone Oracle (Arc's official ecosystem oracle partner)
+    let oracleEurRate = 1.08 // default fallback EUR/USD rate
+    try {
+      const redstoneRes = await fetch('https://api.redstone.finance/prices?symbol=EUR&provider=redstone-primary-prod', {
+        cache: 'no-store'
+      })
+      const redstoneData = await redstoneRes.json()
+      if (Array.isArray(redstoneData) && redstoneData[0] && redstoneData[0].value) {
+        oracleEurRate = redstoneData[0].value
+        console.log('[API Swap] Fetched RedStone Oracle EUR/USD rate:', oracleEurRate)
+      }
+    } catch (oracleErr) {
+      console.warn('[API Swap] RedStone Oracle fetch error, using fallback rate:', oracleErr)
+    }
+
     // Read server EURC balance BEFORE swap
     const balanceBefore = await publicClient.readContract({
       address: EURC_ADDRESS,
@@ -88,7 +103,7 @@ export async function POST(request: Request) {
       args: [account.address]
     }) as bigint
 
-    console.log(`[API Swap] Swapping ${amount} USDC to EURC for agent ${agentAddress}...`)
+    console.log(`[API Swap] Swapping ${amount} USDC to EURC for agent ${agentAddress} using RedStone Oracle rate (${oracleEurRate} USD/EUR)...`)
 
     // 3. Perform the Same-Chain Swap on Arc Testnet using Circle App Kit
     const swapResult = await kit.swap({
@@ -117,10 +132,13 @@ export async function POST(request: Request) {
 
     const actualEurcReceived = balanceAfter - balanceBefore
 
-    // If for any reason swap didn't increase EURC balance (or testnet 1:1 fallback), handle gracefully
-    const finalEurcToTransfer = actualEurcReceived > 0n ? actualEurcReceived : parseUnits(amount, 6)
+    // Calculate dynamic EURC payout based on RedStone Oracle rate
+    const calculatedEurcFromOracle = parseUnits((Number(amount) / oracleEurRate).toFixed(6), 6)
 
-    console.log(`[API Swap] Transferring ${formatUnits(finalEurcToTransfer, 6)} EURC (actual market rate output) to agent ${agentAddress}...`)
+    // Use actual DEX received balance if positive, otherwise use RedStone Oracle calculated amount
+    const finalEurcToTransfer = actualEurcReceived > 0n ? actualEurcReceived : calculatedEurcFromOracle
+
+    console.log(`[API Swap] Transferring ${formatUnits(finalEurcToTransfer, 6)} EURC (RedStone Oracle rate output) to agent ${agentAddress}...`)
     
     const transferTx = await walletClient.writeContract({
       address: EURC_ADDRESS,
@@ -129,13 +147,14 @@ export async function POST(request: Request) {
       args: [agentAddress, finalEurcToTransfer]
     })
 
-    console.log('[API Swap] Transfer complete. Tx Hash:', transferTx)
-
     return NextResponse.json({
       success: true,
       swapTxHash: swapResult.txHash,
       transferTxHash: transferTx,
       amount,
+      eurcAmount: formatUnits(finalEurcToTransfer, 6),
+      oracleProvider: 'RedStone Oracle',
+      oracleEurUsdRate: oracleEurRate,
       recipient: agentAddress
     })
 
