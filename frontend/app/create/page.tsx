@@ -7,6 +7,7 @@ import { parseUnits, createPublicClient, http } from 'viem'
 import { JOB_ESCROW_ADDRESS, JOB_ESCROW_ABI, USDC_TOKEN_ADDRESS, USDC_ABI } from '@/lib/contracts/contracts'
 import { arcTestnet } from '@/lib/wagmi'
 import { AppKit } from '@circle-fin/app-kit'
+import { createViemAdapterFromProvider } from '@circle-fin/adapter-viem-v2'
 
 const SUPPORTED_SOURCE_CHAINS = [
   { id: 'Ethereum_Sepolia', name: 'Ethereum Sepolia', cctpDomain: 0 },
@@ -139,37 +140,52 @@ export default function CreateJob() {
       return
     }
 
+    const ethereumProvider = (window as any).ethereum
+    if (!ethereumProvider) {
+      setErrorMsg('Browser wallet provider (window.ethereum) is required for cross-chain bridging.')
+      return
+    }
+
     try {
       setErrorMsg(null)
       setCurrentStep(1) // Bridging phase via Circle App Kit / CCTP v2
 
       console.log(`[Cross-Chain Bridge] Initiating App Kit CCTP bridge from ${sourceChain} to Arc Testnet...`)
-      
-      // Initialize Circle App Kit
+
+      // 1. Create real Viem adapter from browser wallet provider
+      const viemAdapter = await createViemAdapterFromProvider({
+        provider: ethereumProvider
+      })
+
+      // 2. Initialize Circle App Kit
       const kit = new AppKit()
-      
-      // Execute App Kit bridge operation
-      const bridgeResponse = await (kit as any).bridge({
+
+      // 3. Execute Circle App Kit Bridge with real adapter & correct parameter keys
+      const bridgeResponse = await kit.bridge({
         from: {
-          chain: sourceChain,
-          address: address
+          adapter: viemAdapter,
+          chain: sourceChain as any,
         },
         to: {
           chain: 'Arc_Testnet',
-          recipient: address
+          recipientAddress: address,
+          useForwarder: true
         },
         amount: amount,
         token: 'USDC'
-      }).catch((bridgeErr: any) => {
-        console.warn('[App Kit Bridge] SDK mock/browser fallback:', bridgeErr)
-        return { txHash: '0x' + Array.from({length: 64}, () => Math.floor(Math.random()*16).toString(16)).join('') }
       })
 
-      setBridgeTxHash(bridgeResponse.txHash)
+      const burnStep = bridgeResponse?.steps?.find((s) => s.txHash)
+      const hash = burnStep?.txHash || (bridgeResponse as any)?.hash || (bridgeResponse as any)?.txHash
+      if (!hash) {
+        throw new Error('Bridge operation completed but did not return a valid transaction hash.')
+      }
+
+      setBridgeTxHash(hash)
 
       // Step 2: Prompt user to switch to Arc Testnet & finalize job creation
       if (!isCorrectNetwork) {
-        setErrorMsg('USDC bridged! Please switch your wallet network to Arc Testnet to lock escrow.')
+        setErrorMsg('USDC bridged! Please switch your wallet network to Arc Testnet to complete escrow job creation.')
         setCurrentStep(0)
         return
       }
@@ -199,8 +215,8 @@ export default function CreateJob() {
       }, 3000)
 
     } catch (err: any) {
-      console.error(err)
-      setErrorMsg(err.message || 'Cross-chain bridge operation failed.')
+      console.error('[Cross-Chain Bridge Error]', err)
+      setErrorMsg(err.message || 'Cross-chain bridge operation failed. Please check your wallet connection and network.')
       setCurrentStep(0)
     }
   }
