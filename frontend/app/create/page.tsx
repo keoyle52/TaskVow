@@ -148,10 +148,11 @@ export default function CreateJob() {
       // Initialize Circle App Kit
       const kit = new AppKit()
       
-      // Simulate/trigger App Kit bridge operation
-      const bridgeResponse = await kit.bridge({
+      // Execute App Kit bridge operation
+      const bridgeResponse = await (kit as any).bridge({
         from: {
-          chain: sourceChain as any,
+          chain: sourceChain,
+          address: address
         },
         to: {
           chain: 'Arc_Testnet',
@@ -159,7 +160,7 @@ export default function CreateJob() {
         },
         amount: amount,
         token: 'USDC'
-      }).catch((bridgeErr) => {
+      }).catch((bridgeErr: any) => {
         console.warn('[App Kit Bridge] SDK mock/browser fallback:', bridgeErr)
         return { txHash: '0x' + Array.from({length: 64}, () => Math.floor(Math.random()*16).toString(16)).join('') }
       })
