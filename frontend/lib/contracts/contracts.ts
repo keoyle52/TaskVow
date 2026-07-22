@@ -228,5 +228,15 @@ export const USDC_ABI = [
     "stateMutability": "view",
     "inputs": [{ "name": "account", "type": "address" }],
     "outputs": [{ "name": "", "type": "uint256" }]
+  },
+  {
+    "type": "function",
+    "name": "transfer",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      { "name": "recipient", "type": "address" },
+      { "name": "amount", "type": "uint256" }
+    ],
+    "outputs": [{ "name": "", "type": "bool" }]
   }
 ] as const;

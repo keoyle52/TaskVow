@@ -3,13 +3,15 @@
 import React, { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { useAccount, useReadContract, useWriteContract, useWatchContractEvent } from 'wagmi'
-import { createPublicClient, http, formatUnits } from 'viem'
+import { createPublicClient, http, formatUnits, parseUnits } from 'viem'
 import { arcTestnet } from '@/lib/wagmi'
 import {
   AGENT_REGISTRY_ADDRESS,
   AGENT_REGISTRY_ABI,
   JOB_ESCROW_ADDRESS,
   JOB_ESCROW_ABI,
+  USDC_TOKEN_ADDRESS,
+  USDC_ABI,
 } from '@/lib/contracts/contracts'
 
 interface JobData {
@@ -285,12 +287,28 @@ export default function AgentPortal() {
       setSwapLoading(jobId)
       setErrorMsg(null)
 
+      // Step 1: Transfer received USDC from agent's wallet to swap pool
+      const parsedAmount = parseUnits(amount, 6)
+      const serverAddress = '0x0c93FB2D1BD2F15c12fD5fCCe14918D2dE6Fd9e6'
+
+      alert(`Initiating 1:1 Swap for Job #${jobId}.\n\nStep 1: Confirming transfer of ${amount} USDC from your wallet to the App Kit Swap pool...`)
+
+      const depositTxHash = await writeContractAsync({
+        address: USDC_TOKEN_ADDRESS,
+        abi: USDC_ABI,
+        functionName: 'transfer',
+        args: [serverAddress, parsedAmount],
+      })
+
+      alert(`Step 1 Complete! USDC deposit confirmed.\n\nStep 2: Circle App Kit is now executing the USDC -> EURC swap...`)
+
+      // Step 2: Call server API to run Circle App Kit Swap & deliver EURC
       const response = await fetch('/api/swap', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ amount, agentAddress: address }),
+        body: JSON.stringify({ amount, agentAddress: address, userDepositTxHash: depositTxHash }),
       })
 
       const data = await response.json()
@@ -299,7 +317,7 @@ export default function AgentPortal() {
         throw new Error(data.error || 'Failed to execute swap on the server.')
       }
 
-      alert(`Success! Swap transaction submitted successfully.\n\nSwap Tx: ${data.swapTxHash.slice(0, 15)}...\nTransfer Tx: ${data.transferTxHash.slice(0, 15)}...`)
+      alert(`Success! App Kit Swap completed successfully.\n\nYour ${amount} USDC earnings have been swapped to EURC and delivered to your wallet!\n\nApp Kit Swap Tx: ${data.swapTxHash.slice(0, 15)}...\nEURC Delivery Tx: ${data.transferTxHash.slice(0, 15)}...`)
       
       const newSwapped = [...swappedJobs, jobId]
       setSwappedJobs(newSwapped)
